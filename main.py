@@ -16,8 +16,8 @@ def chat_download_csv(url):
     try:
         chat = ChatDownloader().get_chat(url,
                                          # start_time='0:00',
-                                         # end_time='0:01:00',
-                                         message_groups=['superchat']
+                                         end_time='0:01:00',
+                                         message_groups=['messages', 'superchat']
                                          )
     # create a generator
     except Exception as e:
@@ -27,6 +27,8 @@ def chat_download_csv(url):
     # --------------------------------------------------------------------
     # chat = "<chat_downloader.sites.common.Chat object at 0x0000027CC147BDF0>"
     for message in tqdm.tqdm(chat):  # iterate over messages
+
+        print(f'message: {message}')
         # 各メッセージからデータを抽出
         message_text = message.get('message')
         amount = message.get('money', {}).get('amount')
@@ -34,9 +36,9 @@ def chat_download_csv(url):
 
         # 必要なデータを辞書形式でリストに追加
         messages_data.append({
+            "Time_in_seconds": time_in_seconds,
             "Message": message_text,
             "Amount": amount,
-            "Time_in_seconds": time_in_seconds
         })
 
     # DataFrameに変換してCSVファイルとして出力
@@ -47,7 +49,7 @@ def chat_download_csv(url):
 
 # ガター内の緑色のボタンを押すとスクリプトを実行します。
 if __name__ == '__main__':
-    url = 'https://www.youtube.com/watch?v=SsCkhaxAIZg'
+    url = "https://www.youtube.com/watch?v=4TVSmu2EHkY"
     chat_download_csv(url)
 
 # PyCharm のヘルプは https://www.jetbrains.com/help/pycharm/ を参照してください
