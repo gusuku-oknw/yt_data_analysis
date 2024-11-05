@@ -16,7 +16,7 @@ def chat_download_csv(url):
     try:
         chat = ChatDownloader().get_chat(url,
                                          # start_time='0:00',
-                                         end_time='0:01:00',
+                                         # end_time='0:01:00',
                                          message_groups=['messages', 'superchat']
                                          )
     # create a generator
@@ -49,7 +49,7 @@ def chat_download_csv(url):
 
 # ガター内の緑色のボタンを押すとスクリプトを実行します。
 if __name__ == '__main__':
-    url = "https://www.youtube.com/watch?v=4TVSmu2EHkY"
+    url = "https://www.youtube.com/live/c2mRKDgC7zY"
     chat_download_csv(url)
 
 # PyCharm のヘルプは https://www.jetbrains.com/help/pycharm/ を参照してください
