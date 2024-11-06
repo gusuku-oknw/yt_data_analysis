@@ -5,17 +5,29 @@ import torch
 import re
 
 # CSVファイルの読み込み
-df = pd.read_csv('chat_messages.csv')
+df = pd.read_csv('chat_messages_test.csv')
 
-# -1 を 0 に置き換え
-df = df[df['Time_in_seconds'] >= 0]
 
-# 小数点以下を四捨五入して整数秒にする
-df['Time_in_seconds'] = df['Time_in_seconds'].round().astype(int)
+# データ前処理
+def preprocess(df):
+    # -1 を 0 に置き換え
+    df = df[df['Time_in_seconds'] >= 0].copy()
 
-# スタンプや特殊文字を除去
-df['Message'] = df['Message'].apply(lambda x: re.sub(r':_[A-Z]+:', '', str(x)))
-df['Message'] = df['Message'].apply(lambda x: re.sub(r'[^\w\s]', '', x))  # 特殊文字の除去
+    # 小数点以下を四捨五入して整数秒にする
+    df['Time_in_seconds'] = df['Time_in_seconds'].round().astype(int)
+
+    # スタンプや特殊文字を除去（同じ列に対する操作は一つの関数でまとめる）
+    def clean_message(x):
+        x = re.sub(r':_[A-Z]+:', '', str(x))
+        x = re.sub(r'[^\w\s]', '', x)
+        return x.strip()
+
+    df['Message'] = df['Message'].apply(clean_message)
+
+    return df
+
+
+df = preprocess(df)
 
 # GPUが利用可能かチェック
 if torch.cuda.is_available():
@@ -30,28 +42,34 @@ else:
     raise EnvironmentError("GPUが利用できません。この処理はGPU環境でのみ実行されます。")
 
 
-# token_type_ids を除外する設定
-def analyze_sentiment(text):
-    return sentiment_analyzer(text, truncation=True, padding=True)
+# 感情分析をバッチ処理で実行
+def analyze_sentiments(messages):
+    results = sentiment_analyzer(list(messages), truncation=True, padding=True)
+    labels = [result['label'] for result in results]
+    scores = [round(float(result['score']), 5) for result in results]
+    return labels, scores
 
 
-print(analyze_sentiment("I love this product!"))  # 例: ポジティブ / ネガティブ
+# メッセージをバッチで処理し、結果をデータフレームに追加
+batch_size = 64  # 適切なバッチサイズを設定
+labels = []
+scores = []
 
+for i in range(0, len(df), batch_size):
+    batch_messages = df['Message'].iloc[i:i + batch_size]
+    batch_labels, batch_scores = analyze_sentiments(batch_messages)
+    labels.extend(batch_labels)
+    scores.extend(batch_scores)
 
-# ポジティブなコメントのみ抽出
-def is_positive(text):
-    result = sentiment_analyzer(text[:512], truncation=True, padding=True)  # テキストが長い場合は512文字までに制限
-    return result[0]['label'] == 'POSITIVE'
-
-
-# ポジティブなコメントのみを抽出して新しい列に格納
-df['Positive'] = df['Message'].apply(lambda x: is_positive(str(x)))
+df['Label'] = labels
+df['Score'] = scores
 
 # ポジティブなコメントのみを抽出
-positive_df = df[df['Positive']]
+df['Positive'] = df['Label'] == 'POSITIVE'
+positive_df = df[df['Positive']].copy()
 
-# 10秒ごとに切り捨て（例: 21秒 → 20秒、34秒 → 30秒）
-positive_df['Time_in_10s'] = (positive_df['Time_in_seconds'] // 10) * 10
+# 10秒ごとに切り捨て（警告を回避するために `loc` を使用）
+positive_df.loc[:, 'Time_in_10s'] = (positive_df['Time_in_seconds'] // 10) * 10
 
 # 10秒ごとにポジティブコメント数を集計
 ten_secondly_positive_counts = positive_df.groupby('Time_in_10s').size()
@@ -63,6 +81,9 @@ plt.plot(ten_secondly_positive_counts.index, ten_secondly_positive_counts.values
 plt.xlabel('Time (seconds)')
 plt.ylabel('Positive Comment Count')
 plt.title('Positive Comment Counts per 10 Seconds')
-plt.grid()
+plt.grid(True)
 plt.tight_layout()
 plt.show()
+
+# 分析結果を新しいCSVファイルとして保存
+df.to_csv('chat_messages_with_sentiment.csv', index=False, encoding='utf-8-sig')

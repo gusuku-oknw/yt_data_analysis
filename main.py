@@ -16,7 +16,7 @@ def chat_download_csv(url):
     try:
         chat = ChatDownloader().get_chat(url,
                                          # start_time='0:00',
-                                         # end_time='0:01:00',
+                                         end_time='0:10:00',
                                          message_groups=['messages', 'superchat']
                                          )
     # create a generator
@@ -28,7 +28,7 @@ def chat_download_csv(url):
     # chat = "<chat_downloader.sites.common.Chat object at 0x0000027CC147BDF0>"
     for message in tqdm.tqdm(chat):  # iterate over messages
 
-        print(f'message: {message}')
+        # print(f'message: {message}')
         # 各メッセージからデータを抽出
         message_text = message.get('message')
         amount = message.get('money', {}).get('amount')
@@ -43,7 +43,7 @@ def chat_download_csv(url):
 
     # DataFrameに変換してCSVファイルとして出力
     df = pd.DataFrame(messages_data)
-    df.to_csv('./chat_messages.csv', index=False, encoding='utf-8-sig')
+    df.to_csv('./chat_messages_test.csv', index=False, encoding='utf-8-sig')
     print("CSVファイル 'chat_messages.csv' が作成されました。")
 
 
