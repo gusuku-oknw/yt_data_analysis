@@ -16,7 +16,7 @@ def chat_download_csv(url):
     try:
         chat = ChatDownloader().get_chat(url,
                                          # start_time='0:00',
-                                         end_time='0:10:00',
+                                         # end_time='0:10:00',
                                          message_groups=['messages', 'superchat']
                                          )
     # create a generator
@@ -43,13 +43,15 @@ def chat_download_csv(url):
 
     # DataFrameに変換してCSVファイルとして出力
     df = pd.DataFrame(messages_data)
-    df.to_csv('./chat_messages_test.csv', index=False, encoding='utf-8-sig')
+    file_name = url.rsplit('=', 1)[1]
+
+    df.to_csv(f'./chat_messages_{file_name}.csv', index=False, encoding='utf-8-sig')
     print("CSVファイル 'chat_messages.csv' が作成されました。")
 
 
 # ガター内の緑色のボタンを押すとスクリプトを実行します。
 if __name__ == '__main__':
-    url = "https://www.youtube.com/live/c2mRKDgC7zY"
+    url = "https://www.youtube.com/watch?v=lFL06DmvdFU"
     chat_download_csv(url)
 
 # PyCharm のヘルプは https://www.jetbrains.com/help/pycharm/ を参照してください
