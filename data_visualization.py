@@ -1,9 +1,11 @@
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from transformers import pipeline
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch.nn.functional as F
 import torch
 import re
-import tqdm
+from tqdm import tqdm
 
 # CSVファイルの読み込み
 df = pd.read_csv('chat_messages_test.csv')
@@ -30,55 +32,74 @@ def preprocess(df):
 df = preprocess(df)
 
 # GPUが利用可能かチェック
-if torch.cuda.is_available():
-    device = 0  # GPUを使用
-else:
-    device = -1  # CPUを使用
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(device)
 
-# 感情分析パイプラインの作成
-sentiment_pipeline = pipeline(
-    "sentiment-analysis",
-    model="koheiduck/bert-japanese-finetuned-sentiment",
-    tokenizer="koheiduck/bert-japanese-finetuned-sentiment",
-    device=device
-)
+# 感情分析モデルの初期設定
+checkpoint = "./saved_model"  # モデル保存先
+tokenizer = AutoTokenizer.from_pretrained(checkpoint)
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint)
+model.to(device)
+
+# 感情ラベル
+emotion_names = ['Joy', 'Sadness', 'Anticipation', 'Surprise', 'Anger', 'Fear', 'Disgust', 'Trust']
+emotion_names_jp = ['喜び', '悲しみ', '期待', '驚き', '怒り', '恐れ', '嫌悪', '信頼']  # 日本語版
+
+
+# 感情分析パイプライン関数
+def sentiment_pipeline(messages):
+    """
+    メッセージを入力として感情ラベルとスコアを返す関数
+    """
+    results = []
+    model.eval()
+
+    for message in messages:
+        # トークナイズと推論
+        tokens = tokenizer(message, truncation=True, return_tensors="pt", padding=True).to(device)
+        with torch.no_grad():
+            logits = model(**tokens).logits
+
+        # GPU上でソフトマックス計算
+        probs = F.softmax(logits, dim=-1)[0].cpu().numpy()  # 必要に応じてNumPy配列に変換
+        results.append(probs)
+    return results
+
 
 # メッセージをバッチで処理し、結果をデータフレームに追加
 batch_size = 64  # 適切なバッチサイズを設定
-labels = []
-scores = []
+all_scores = []
 
-for i in tqdm.tqdm(range(0, len(df), batch_size)):
+for i in tqdm(range(0, len(df), batch_size)):
     batch_messages = df['Message'].iloc[i:i + batch_size].tolist()
     if len(batch_messages) == 0:
         continue  # 空のバッチはスキップ
-    results = sentiment_pipeline(batch_messages)
-    print(results)
-    batch_labels = [result['label'] for result in results]
-    batch_scores = [round(float(result['score']), 5) for result in results]
-    labels.extend(batch_labels)
-    scores.extend(batch_scores)
+    batch_scores = sentiment_pipeline(batch_messages)
+    all_scores.extend(batch_scores)
 
-df['Label'] = labels
-df['Score'] = scores
+# 各感情スコアを個別の列として追加
+for i, emotion in enumerate(emotion_names):
+    df[emotion] = [scores[i] for scores in all_scores]
 
-# ポジティブなコメントのみを抽出
-df['Positive'] = df['Label'] == 'ポジティブ'
-positive_df = df[df['Positive']].copy()
+# 最も高いスコアの感情をラベルとして追加
+df['Label'] = df[emotion_names].idxmax(axis=1)
 
-# 10秒ごとに切り捨て
-positive_df['Time_in_10s'] = (positive_df['Time_in_seconds'] // 10) * 10
+# 時間を10秒単位に切り捨て
+df['Time_in_10s'] = (df['Time_in_seconds'] // 10) * 10
 
-# 10秒ごとにポジティブコメント数を集計
-ten_secondly_positive_counts = positive_df.groupby('Time_in_10s').size()
+# 感情ごとの10秒単位のコメント数を集計
+emotion_counts = df.groupby(['Time_in_10s', 'Label']).size().unstack(fill_value=0)
 
-# 10秒ごとの時系列グラフの表示
-plt.figure(figsize=(12, 6))
-plt.plot(ten_secondly_positive_counts.index, ten_secondly_positive_counts.values, marker='o', linestyle='-',
-         color='steelblue')
-plt.xlabel('Time (seconds)')
-plt.ylabel('Positive Comment Count')
-plt.title('Positive Comment Counts per 10 Seconds')
+# グラフをプロット
+plt.figure(figsize=(12, 8))
+for emotion in emotion_names:
+    if emotion in emotion_counts.columns:
+        plt.plot(emotion_counts.index, emotion_counts[emotion], marker='o', linestyle='-', label=emotion)
+
+plt.xlabel('Time (seconds)', fontsize=12)
+plt.ylabel('Comment Count', fontsize=12)
+plt.title("Comment Counts per 10 Seconds by Emotion", fontsize=15)
+plt.legend(title='Emotion', loc='upper right')
 plt.grid(True)
 plt.tight_layout()
 plt.show()
