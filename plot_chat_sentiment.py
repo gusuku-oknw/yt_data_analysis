@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # CSVファイルの読み込み
-input_file = 'chat_messages_with_emotion.csv=lFL06DmvdFU.csv'
+input_file = 'output/chat_messages_with_sentiment_bert-finetuned=lFL06DmvdFU.csv.csv'
 df = pd.read_csv(input_file)
 
 # 必要な列の存在を確認して追加
@@ -13,6 +13,9 @@ else:
 
 # 感情スコア列からラベルを作成（必要であれば）
 emotion_names = ['喜び', '悲しみ', '期待', '驚き', '怒り', '恐れ', '嫌悪', '信頼']
+emotion_names = ['positive', 'neutral', 'negative']
+# emotion_names_jp = ['ポジティブ', 'ニュートラル', 'ネガティブ']  # 日本語版
+
 if all(col in df.columns for col in emotion_names):
     df['Label'] = df[emotion_names].idxmax(axis=1)
 else:

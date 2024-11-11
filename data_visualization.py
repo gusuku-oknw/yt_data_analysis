@@ -8,7 +8,7 @@ import re
 from tqdm import tqdm
 
 # CSVファイルの読み込み
-df = pd.read_csv('chat_messages_test.csv')
+df = pd.read_csv('data/chat_messages_test.csv')
 
 
 # データ前処理

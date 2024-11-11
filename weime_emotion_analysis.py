@@ -55,7 +55,7 @@ def analyze_emotion_batch(messages):
 # メイン処理
 if __name__ == "__main__":
     # CSVファイルの読み込み
-    input_file = "chat_messages=lFL06DmvdFU.csv"  # 入力CSVファイル名
+    input_file = "data/chat_messages=lFL06DmvdFU.csv"  # 入力CSVファイル名
     output_file = "chat_messages_with_emotion.csv"  # 出力CSVファイル名
 
     file_name = input_file.rsplit('=', 1)[1]

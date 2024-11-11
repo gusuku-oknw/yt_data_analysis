@@ -4,7 +4,7 @@ import MeCab
 import matplotlib.pyplot as plt
 
 # CSVファイルの読み込み
-df = pd.read_csv('chat_messages=SH6HQFhgQ54.csv')
+df = pd.read_csv('data/chat_messages=SH6HQFhgQ54.csv')
 
 # 全メッセージからテキストを結合
 all_text = ' '.join(df['Message'].dropna())  # NaNのメッセージを除外して結合
