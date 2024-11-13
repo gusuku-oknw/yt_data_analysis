@@ -1,5 +1,4 @@
 from googleapiclient.discovery import build
-from pytube import Channel
 import os
 from dotenv import load_dotenv
 import csv
@@ -31,95 +30,79 @@ def convert_duration(iso_duration):
     else:
         return f"{minutes}:{seconds:02}"
 
-# チャンネル情報を取得するメソッド
-def get_channel_videos_and_details(channel_id, max_results=10):
+# 動画とチャンネル情報を取得するメソッド
+def get_video_and_channel_data(video_id, channel_id):
+    # 動画情報の取得
+    video_response = youtube_api.videos().list(
+        part="snippet,contentDetails,statistics",
+        id=video_id
+    ).execute()
+
+    video_title = video_response['items'][0]['snippet']['title']
+    video_description = video_response['items'][0]['snippet'].get('description', "N/A")
+    iso_duration = video_response['items'][0]['contentDetails'].get('duration', "N/A")
+    video_duration = convert_duration(iso_duration)
+    thumbnails = video_response['items'][0]['snippet']['thumbnails']
+    thumbnail_url = thumbnails.get('high', thumbnails.get('default', {})).get('url', "N/A")
+    view_count = video_response['items'][0]['statistics'].get('viewCount', "N/A")
+
+    # チャンネル情報の取得
     channel_response = youtube_api.channels().list(
         part="snippet,statistics",
         id=channel_id
     ).execute()
 
-    # チャンネル情報の取得
-    channel_info = channel_response['items'][0]
-    channel_title = channel_info['snippet']['title']
-    channel_description = channel_info['snippet'].get('description', "N/A")
-    subscriber_count = channel_info['statistics'].get('subscriberCount', "非公開")
-    channel_url = f"https://www.youtube.com/channel/{channel_id}"
+    channel_title = channel_response['items'][0]['snippet']['title']
+    channel_description = channel_response['items'][0]['snippet'].get('description', "N/A")
+    subscriber_count = channel_response['items'][0]['statistics'].get('subscriberCount', "非公開")
 
-    # チャンネルの動画情報を取得
-    search_response = youtube_api.search().list(
-        part="snippet",
-        channelId=channel_id,
-        maxResults=max_results,
-        order="date",  # 新着順
-        type="video"
-    ).execute()
-
-    videos = []
-    for item in search_response['items']:
-        video_id = item['id']['videoId']
-        video_title = item['snippet']['title']
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-        # 動画詳細情報の取得
-        video_response = youtube_api.videos().list(
-            part="snippet,contentDetails,statistics",
-            id=video_id
-        ).execute()
-
-        video_info = video_response['items'][0]
-        video_description = video_info['snippet'].get('description', "N/A")
-        video_duration = convert_duration(video_info['contentDetails'].get('duration', "N/A"))
-        view_count = video_info['statistics'].get('viewCount', "N/A")
-        thumbnails = video_info['snippet']['thumbnails']
-        thumbnail_url = thumbnails.get('high', thumbnails.get('default', {})).get('url', "N/A")
-
-        # 動画データを追加
-        videos.append({
-            "Video Title": video_title,
-            "Video URL": video_url,
-            "Thumbnail URL": thumbnail_url,
-            "Video Description": video_description,
-            "Video Duration": video_duration,
-            "Video Views": view_count
-        })
-
+    # データを辞書形式で返す
     return {
+        "Video Title": video_title,
+        "Video URL": f"https://www.youtube.com/watch?v={video_id}",
+        "Thumbnail URL": thumbnail_url,
+        "Video Description": video_description,
+        "Video Duration": video_duration,
+        "Video Views": view_count,
         "Channel Title": channel_title,
-        "Channel URL": channel_url,
+        "Channel URL": f"https://www.youtube.com/channel/{channel_id}",
         "Subscriber Count": subscriber_count,
-        "Channel Description": channel_description,
-        "Videos": videos
+        "Channel Description": channel_description
     }
 
-# pytubeを使用して人気動画を取得するメソッド
-def get_popular_videos_from_channel(channel_url, max_results=10):
-    channel = Channel(channel_url)
-    popular_videos = []
+# 検索キーワードを指定
+search_keyword = "Python tutorial"
 
-    for video in channel.videos[:max_results]:
-        popular_videos.append({
-            "Video Title": video.title,
-            "Video URL": video.watch_url,
-            "Views": video.views,
-            "Published Date": video.publish_date
-        })
+# YouTube Data APIで検索を実行
+response = youtube_api.search().list(
+    q=search_keyword,
+    part="snippet",
+    type="video",
+    maxResults=10
+).execute()
 
-    return popular_videos
+# データを保存するリスト
+data = []
 
-# チャンネルIDまたはURLでテスト実行
-channel_id = "UC8butISFwT-Wl7EV0hUK0BQ"  # example: freeCodeCamp.org
-channel_details = get_channel_videos_and_details(channel_id)
+# 検索結果の処理
+for item in response['items']:
+    video_id = item['id']['videoId']
+    channel_id = item['snippet']['channelId']
 
-# チャンネル人気動画の取得
-channel_url = f"https://www.youtube.com/channel/{channel_id}"
-popular_videos = get_popular_videos_from_channel(channel_url)
+    # 動画とチャンネルの情報を取得してリストに追加
+    data.append(get_video_and_channel_data(video_id, channel_id))
 
-# 結果表示
-print(f"Channel: {channel_details['Channel Title']} ({channel_details['Subscriber Count']} subscribers)")
-print("Latest Videos:")
-for video in channel_details["Videos"]:
-    print(f"- {video['Video Title']} ({video['Video Views']} views)")
+# CSVファイルの名前
+csv_filename = "youtube_search_results_with_channel.csv"
 
-print("\nPopular Videos:")
-for video in popular_videos:
-    print(f"- {video['Video Title']} ({video['Views']} views)")
+# CSVファイルにデータを書き込む
+with open(csv_filename, mode="w", newline="", encoding="utf-8") as file:
+    writer = csv.DictWriter(file, fieldnames=[
+        "Video Title", "Video URL", "Thumbnail URL", "Video Description",
+        "Video Duration", "Video Views", "Channel Title", "Channel URL",
+        "Subscriber Count", "Channel Description"
+    ])
+    writer.writeheader()
+    writer.writerows(data)
+
+print(f"データが {csv_filename} に保存されました。")
