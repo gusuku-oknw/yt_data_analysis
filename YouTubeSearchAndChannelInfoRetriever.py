@@ -1,4 +1,5 @@
 from googleapiclient.discovery import build
+from pytube import Channel
 import os
 from dotenv import load_dotenv
 import csv
@@ -12,12 +13,6 @@ API_KEY = os.environ['YoutubeKey']
 
 # YouTube Data APIのクライアントを作成
 youtube_api = build('youtube', 'v3', developerKey=API_KEY)
-
-# 検索キーワードを指定
-search_keyword = "Python tutorial"
-
-# CSVファイルの名前
-csv_filename = "youtube_search_results_with_views.csv"
 
 # ISO 8601の再生時間を人間が読みやすい形式に変換する関数
 def convert_duration(iso_duration):
@@ -36,78 +31,95 @@ def convert_duration(iso_duration):
     else:
         return f"{minutes}:{seconds:02}"
 
-# YouTube Data APIで検索を実行
-response = youtube_api.search().list(
-    q=search_keyword,
-    part="snippet",
-    type="video",
-    maxResults=10
-).execute()
-
-# データを保存するリスト
-data = []
-
-# 検索結果の処理
-for item in response['items']:
-    video_title = item['snippet']['title']
-    video_id = item['id']['videoId']
-    channel_id = item['snippet']['channelId']
-    channel_title = item['snippet']['channelTitle']
-    video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-    # 動画情報の取得
-    video_response = youtube_api.videos().list(
-        part="snippet,contentDetails,statistics",
-        id=video_id
-    ).execute()
-
-    # 動画の説明文
-    video_description = video_response['items'][0]['snippet'].get('description', "N/A")
-
-    # 動画の長さ（ISO 8601形式から変換）
-    iso_duration = video_response['items'][0]['contentDetails'].get('duration', "N/A")
-    video_duration = convert_duration(iso_duration)
-
-    # サムネイル画像URL（高解像度があれば優先）
-    thumbnails = video_response['items'][0]['snippet']['thumbnails']
-    thumbnail_url = thumbnails.get('high', thumbnails.get('default', {})).get('url', "N/A")
-
-    # 再生回数を取得
-    view_count = video_response['items'][0]['statistics'].get('viewCount', "N/A")
-
-    # チャンネル情報の取得
+# チャンネル情報を取得するメソッド
+def get_channel_videos_and_details(channel_id, max_results=10):
     channel_response = youtube_api.channels().list(
         part="snippet,statistics",
         id=channel_id
     ).execute()
 
-    # チャンネルの説明文
-    channel_description = channel_response['items'][0]['snippet'].get('description', "N/A")
+    # チャンネル情報の取得
+    channel_info = channel_response['items'][0]
+    channel_title = channel_info['snippet']['title']
+    channel_description = channel_info['snippet'].get('description', "N/A")
+    subscriber_count = channel_info['statistics'].get('subscriberCount', "非公開")
+    channel_url = f"https://www.youtube.com/channel/{channel_id}"
 
-    # チャンネル登録者数を取得
-    subscriber_count = channel_response['items'][0]['statistics'].get('subscriberCount', "非公開")
+    # チャンネルの動画情報を取得
+    search_response = youtube_api.search().list(
+        part="snippet",
+        channelId=channel_id,
+        maxResults=max_results,
+        order="date",  # 新着順
+        type="video"
+    ).execute()
 
-    # データをリストに追加
-    data.append({
-        "Video Title": video_title,
-        "Video URL": video_url,
-        "Thumbnail URL": thumbnail_url,
-        "Video Description": video_description,
-        "Video Duration": video_duration,
-        "Video Views": view_count,
+    videos = []
+    for item in search_response['items']:
+        video_id = item['id']['videoId']
+        video_title = item['snippet']['title']
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+
+        # 動画詳細情報の取得
+        video_response = youtube_api.videos().list(
+            part="snippet,contentDetails,statistics",
+            id=video_id
+        ).execute()
+
+        video_info = video_response['items'][0]
+        video_description = video_info['snippet'].get('description', "N/A")
+        video_duration = convert_duration(video_info['contentDetails'].get('duration', "N/A"))
+        view_count = video_info['statistics'].get('viewCount', "N/A")
+        thumbnails = video_info['snippet']['thumbnails']
+        thumbnail_url = thumbnails.get('high', thumbnails.get('default', {})).get('url', "N/A")
+
+        # 動画データを追加
+        videos.append({
+            "Video Title": video_title,
+            "Video URL": video_url,
+            "Thumbnail URL": thumbnail_url,
+            "Video Description": video_description,
+            "Video Duration": video_duration,
+            "Video Views": view_count
+        })
+
+    return {
         "Channel Title": channel_title,
-        "Channel URL": f"https://www.youtube.com/channel/{channel_id}",
+        "Channel URL": channel_url,
         "Subscriber Count": subscriber_count,
-        "Channel Description": channel_description
-    })
+        "Channel Description": channel_description,
+        "Videos": videos
+    }
 
-# CSVファイルにデータを書き込む
-with open(csv_filename, mode="w", newline="", encoding="utf-8") as file:
-    writer = csv.DictWriter(file, fieldnames=[
-        "Video Title", "Video URL", "Channel Title", "Channel URL", "Subscriber Count",
-        "Thumbnail URL", "Video Description", "Video Duration", "Video Views", "Channel Description"
-    ])
-    writer.writeheader()
-    writer.writerows(data)
+# pytubeを使用して人気動画を取得するメソッド
+def get_popular_videos_from_channel(channel_url, max_results=10):
+    channel = Channel(channel_url)
+    popular_videos = []
 
-print(f"データが {csv_filename} に保存されました。")
+    for video in channel.videos[:max_results]:
+        popular_videos.append({
+            "Video Title": video.title,
+            "Video URL": video.watch_url,
+            "Views": video.views,
+            "Published Date": video.publish_date
+        })
+
+    return popular_videos
+
+# チャンネルIDまたはURLでテスト実行
+channel_id = "UC8butISFwT-Wl7EV0hUK0BQ"  # example: freeCodeCamp.org
+channel_details = get_channel_videos_and_details(channel_id)
+
+# チャンネル人気動画の取得
+channel_url = f"https://www.youtube.com/channel/{channel_id}"
+popular_videos = get_popular_videos_from_channel(channel_url)
+
+# 結果表示
+print(f"Channel: {channel_details['Channel Title']} ({channel_details['Subscriber Count']} subscribers)")
+print("Latest Videos:")
+for video in channel_details["Videos"]:
+    print(f"- {video['Video Title']} ({video['Video Views']} views)")
+
+print("\nPopular Videos:")
+for video in popular_videos:
+    print(f"- {video['Video Title']} ({video['Views']} views)")
