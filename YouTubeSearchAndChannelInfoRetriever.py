@@ -45,16 +45,16 @@ def get_video_details(video_id):
     statistics = video['statistics']
 
     video_data = {
-        'video_id': video_id,
-        'title': snippet.get('title', 'N/A'),
-        'description': snippet.get('description', 'N/A'),
-        'thumbnail_url': snippet['thumbnails'].get('high', {}).get('url', 'N/A'),
-        'duration': convert_duration(content_details.get('duration', 'N/A')),
-        'view_count': statistics.get('viewCount', 'N/A'),
-        'like_count': statistics.get('likeCount', 'N/A'),
-        'comment_count': statistics.get('commentCount', 'N/A'),
-        'channel_id': snippet.get('channelId', 'N/A'),
-        'channel_title': snippet.get('channelTitle', 'N/A'),
+        'video_id': video_id, # 動画ID
+        'title': snippet.get('title', 'N/A'), # タイトル
+        'description': snippet.get('description', 'N/A'), # 説明
+        'thumbnail_url': snippet['thumbnails'].get('high', {}).get('url', 'N/A'), # サムネイルURL
+        'duration': convert_duration(content_details.get('duration', 'N/A')), # 再生時間
+        'view_count': statistics.get('viewCount', 'N/A'), # 再生回数
+        'like_count': statistics.get('likeCount', 'N/A'), # いいね数
+        'comment_count': statistics.get('commentCount', 'N/A'), # コメント数
+        'channel_id': snippet.get('channelId', 'N/A'), # チャンネルID
+        'channel_title': snippet.get('channelTitle', 'N/A'), # チャンネル名
     }
     return video_data
 
@@ -105,10 +105,10 @@ def search_videos(keyword, max_results=10):
             channel_data = get_channel_details(channel_id)
             if channel_data:
                 video_data.update({
-                    'channel_title': channel_data['title'],
-                    'channel_url': channel_data['channel_url'],
-                    'subscriber_count': channel_data['subscriber_count'],
-                    'channel_description': channel_data['description']
+                    'channel_title': channel_data['title'], # チャンネル名
+                    'channel_url': channel_data['channel_url'], # チャンネルURL
+                    'subscriber_count': channel_data['subscriber_count'], # チャンネル登録者数
+                    'channel_description': channel_data['description'] # チャンネル説明
                 })
                 video_data_list.append(video_data)
     return video_data_list
@@ -123,7 +123,7 @@ def save_to_csv(data, filename):
         "Video Duration", "Video Views", "Channel Title", "Channel URL",
         "Subscriber Count", "Channel Description"
     ]
-    with open(filename, mode="w", newline="", encoding="utf-8") as file:
+    with open(filename, mode="w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         for video in data:
@@ -198,31 +198,75 @@ def get_popular_videos_from_channel(channel_id, max_results=5):
     return videos[:max_results]
 
 
+def save2csv(data, filename, fieldnames):
+    """
+    データを指定されたフィールド名でCSVファイルに保存する関数。
+    """
+    with open(filename, mode="w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(data)
+
+
 def main():
     # 検索キーワードを指定
     search_keyword = "Python tutorial"
     # 動画を検索
     videos = search_videos(search_keyword, max_results=10)
+    formatted_videos = []
+    for video in videos:
+        formatted_videos.append({
+            "Video Title": video.get("title", ""),
+            "Video URL": f"https://www.youtube.com/watch?v={video.get('video_id', '')}",
+            "Thumbnail URL": video.get("thumbnail_url", ""),
+            "Video Description": video.get("description", ""),
+            "Video Duration": video.get("duration", ""),
+            "Video Views": video.get("view_count", ""),
+            "Channel Title": video.get("channel_title", ""),
+            "Channel URL": video.get("channel_url", ""),
+            "Subscriber Count": video.get("subscriber_count", ""),
+            "Channel Description": video.get("channel_description", "")
+        })
+    fieldnames = [
+        "Video Title",
+        "Video URL",
+        "Thumbnail URL",
+        "Video Description",
+        "Video Duration",
+        "Video Views",
+        "Channel Title",
+        "Channel URL",
+        "Subscriber Count",
+        "Channel Description"
+    ]
     # CSVファイルに保存
     csv_filename = "youtube_search_results_with_channel.csv"
-    save_to_csv(videos, csv_filename)
-    print(f"データが {csv_filename} に保存されました。")
+    save2csv(formatted_videos, csv_filename, fieldnames)  # 修正点：formatted_videosを渡す
+
+    print(f"検索結果データが {csv_filename} に保存されました。")
 
     # チャンネルの人気動画を取得
     channel_id = "UCs6nmQViDpUw0nuIx9c_WvA"  # ProgrammingKnowledgeのチャンネルID
     popular_videos = get_popular_videos_from_channel(channel_id, max_results=5)
-    # 結果を表示
-    for video in popular_videos:
-        print(f"Title: {video['title']}")
-        print(f"URL: https://www.youtube.com/watch?v={video['video_id']}")
-        print(f"Description: {video['description']}")
-        print(f"Duration: {video['duration']}")
-        print(f"Views: {video['view_count']}")
-        print(f"Likes: {video['like_count']}")
-        print(f"Comments: {video['comment_count']}")
-        print(f"Thumbnail: {video['thumbnail_url']}")
-        print("---")
 
+    if popular_videos:
+        # チャンネル名を取得
+        channel_details = get_channel_details(channel_id)
+        channel_name = channel_details['title'] if channel_details else "UnknownChannel"
+
+        # ファイル名を「チャンネルID_チャンネル名.csv」とする
+        sanitized_channel_name = re.sub(r'[\\/*?:"<>|]', "", channel_name)  # ファイル名に使用できない文字を除去
+        csv_filename_popular = f"{channel_id}_{sanitized_channel_name}.csv"
+
+        # 人気動画をCSVに保存
+        popular_fieldnames = [
+            "Video Title", "Video URL", "Video Description", "Video Duration",
+            "Video Views", "Likes", "Comments", "Thumbnail URL"
+        ]
+        save2csv(popular_videos, csv_filename_popular, popular_fieldnames)
+        print(f"人気動画データが {csv_filename_popular} に保存されました。")
+    else:
+        print("人気動画の取得に失敗しました。")
 
 if __name__ == "__main__":
     main()
