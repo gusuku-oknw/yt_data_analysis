@@ -16,6 +16,7 @@ def get_video_id_from_url(url):
     - 通常のYouTube URL (例: https://www.youtube.com/watch?v=...)
     - 短縮URL (例: https://youtu.be/...)
     - ライブ配信URL (例: https://www.youtube.com/live/...)
+    - プレイリスト付きURL (例: https://www.youtube.com/watch?v=...&list=...)
 
     Parameters:
         url (str): 処理対象のURL。
@@ -25,18 +26,18 @@ def get_video_id_from_url(url):
     """
     parsed_url = urlparse(url)
 
-    # YouTubeの通常の動画URL
+    # 1. 通常のYouTube動画URL (例: https://www.youtube.com/watch?v=...)
     if "youtube.com" in parsed_url.netloc:
         query_params = parse_qs(parsed_url.query)
-        if "v" in query_params:
-            return query_params["v"][0]  # v= のパラメータから動画IDを取得
-        # Live配信URL形式の場合
+        if "v" in query_params:  # v= パラメータが存在する場合
+            return query_params["v"][0]
+        # /live/形式のライブ配信URLの場合
         if "/live/" in parsed_url.path:
-            return os.path.basename(parsed_url.path)  # パスの最後の要素を動画IDと見なす
+            return parsed_url.path.split("/")[-1]
 
-    # YouTubeの短縮URL (youtu.be形式)
+    # 2. 短縮URL (例: https://youtu.be/...)
     if "youtu.be" in parsed_url.netloc:
-        return parsed_url.path.strip("/")  # パス部分が動画ID
+        return parsed_url.path.strip("/")  # 短縮URLの場合、パス部分をIDとして返す
 
     current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 

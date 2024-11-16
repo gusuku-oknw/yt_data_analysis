@@ -56,6 +56,10 @@ def filter_and_correct_urls(url_list):
         if "&t=" in url:
             url = url.split("&t=")[0]  # タイムスタンプパラメータ以前の部分を取得
 
+        # `/channel/` が含まれる場合はスキップ
+        if "/channel/" in url:
+            continue
+
         # YouTubeまたはTwitchのURLとして有効かチェック
         if youtube_url_pattern.match(url) or twitch_url_pattern.match(url):
             valid_urls.append(url)
@@ -109,10 +113,23 @@ def list_original_urls(csv_file, base_directory="data/chat_messages", url_column
     valid_urls = list(set(valid_urls))  # 重複を除去してリストに変換
 
     for valid_url in valid_urls:
-        print(f"処理中のURL: {valid_url}")
-        # チャット取得処理を実行（仮の実装）
-        chat_download.chat_download_csv(valid_url, target_directory)
-        print(f"チャットデータを保存しました: {valid_url}")
+        # 動画IDを取得してファイル名を生成
+        video_id = chat_download.get_video_id_from_url(chat_download.remove_query_params(valid_url))
+        file_name = f"{video_id}.csv"  # 保存するファイル名
+        file_path = os.path.join(target_directory, file_name)
+
+        # ファイルが既に存在する場合はスキップ
+        if os.path.exists(file_path):
+            print(f"ファイルが既に存在します。スキップします: {file_path}")
+            continue
+
+        # チャット取得処理を実行
+        try:
+            print(f"処理中のURL: {valid_url}")
+            chat_download.chat_download_csv(valid_url, target_directory)
+            print(f"チャットデータを保存しました: {valid_url}")
+        except Exception as e:
+            print(f"エラーが発生しました: {e} - URL: {valid_url}")
 
 
 # 実行例
