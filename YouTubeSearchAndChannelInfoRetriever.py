@@ -1,15 +1,50 @@
+from datetime import datetime
 import os
 import re
 import csv
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
+import pandas as pd
+from openai import OpenAI
 
 # 環境変数の読み込み
 load_dotenv()
 API_KEY = os.environ['YoutubeKey']
-
+OpenAIKey = os.environ['OpenAIKey']
 # YouTube Data APIのクライアントを作成
 youtube = build('youtube', 'v3', developerKey=API_KEY)
+
+client = OpenAI(
+    api_key=OpenAIKey,
+)
+
+# テキストを入力として、OpenAIのGPT-4を使用してテキストを生成する関数
+def prompt_clip_api_call(text):
+    if not text.strip():
+        return ""
+    elif text == ",":
+        return ""
+
+    message = [
+        {"role": "user", "content": "今から入力されるテキストは切り抜き動画の概要欄です。 \
+        このテキストの中で元動画を指しているURLを教えて下さい。このときの返答としてはURLのみを出力してください \
+        URLがない場合はNoneと返してください"},
+        {"role": "user", "content": text}
+    ]
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=message,
+            temperature=0.2,
+            # max_tokens=50
+        )
+
+        translated_text = response.choices[0].message.content.strip()
+    except Exception as e:
+        print("エラーが発生しました:", str(e))
+        translated_text = "エラーが発生しました。"
+
+    return translated_text
 
 
 def convert_duration(iso_duration):
@@ -208,11 +243,11 @@ def save2csv(data, filename, fieldnames):
         writer.writerows(data)
 
 
-def main():
+def search_main():
     # 検索キーワードを指定
-    search_keyword = "Python tutorial"
+    search_keyword = "ホロライブ　切り抜き"
     # 動画を検索
-    videos = search_videos(search_keyword, max_results=10)
+    videos = search_videos(search_keyword, max_results=100)
     formatted_videos = []
     for video in videos:
         formatted_videos.append({
@@ -227,6 +262,7 @@ def main():
             "Subscriber Count": video.get("subscriber_count", ""),
             "Channel Description": video.get("channel_description", "")
         })
+
     fieldnames = [
         "Video Title",
         "Video URL",
@@ -240,11 +276,47 @@ def main():
         "Channel Description"
     ]
     # CSVファイルに保存
-    csv_filename = "youtube_search_results_with_channel.csv"
+    # 現在時刻を取得し、フォーマットする
+    current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    csv_filename = f"{search_keyword}_{current_time}_videos.csv"
     save2csv(formatted_videos, csv_filename, fieldnames)  # 修正点：formatted_videosを渡す
 
     print(f"検索結果データが {csv_filename} に保存されました。")
 
+
+# チャンネルの人気動画を取得
+def get_channel_csv():
+    """
+    channel_list.csv を読み込んで Channel Description 部分を取得し、
+    prompt_clip_api_call を使って処理を実行する関数。
+    """
+    file_name = "ホロライブ　切り抜き_2024-11-16_18-26-28_videos.csv"
+
+    try:
+        # CSVファイルを読み込む
+        df = pd.read_csv(file_name, encoding="utf-8-sig")
+
+        # 'Channel Description'カラムが存在するか確認
+        if "Channel Description" not in df.columns:
+            print("CSVファイルに 'Channel Description' カラムが見つかりませんでした。")
+            return
+
+        # 'Channel Description'カラムの最初の1件を取得
+        first_description = df["Channel Description"].iloc[1]
+
+        print(first_description)
+        # prompt_clip_api_call 関数で使用
+        result = prompt_clip_api_call(first_description)
+
+        # 結果を表示
+        print("API呼び出し結果:", result)
+
+    except FileNotFoundError:
+        print(f"{file_name} が見つかりませんでした。")
+    except Exception as e:
+        print("エラーが発生しました:", str(e))
+
+def get_popular_main():
     # チャンネルの人気動画を取得
     channel_id = "UCs6nmQViDpUw0nuIx9c_WvA"  # ProgrammingKnowledgeのチャンネルID
     popular_videos = get_popular_videos_from_channel(channel_id, max_results=5)
@@ -269,4 +341,7 @@ def main():
         print("人気動画の取得に失敗しました。")
 
 if __name__ == "__main__":
-    main()
+    # search_main()
+    get_channel_csv()
+
+    # get_popular_main()
