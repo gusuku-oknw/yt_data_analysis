@@ -52,6 +52,7 @@ model_emotion = AutoModelForSequenceClassification.from_pretrained(checkpoint_em
 # 感情名
 sentiment_names = ['positive', 'neutral', 'negative']
 sentiment_names_jp = ['ポジティブ', 'ニュートラル', 'ネガティブ']
+emotion_names = ['Joy', 'Sadness', 'Anticipation', 'Surprise', 'Anger', 'Fear', 'Disgust', 'Trust']
 emotion_names_jp = ['喜び', '悲しみ', '期待', '驚き', '怒り', '恐れ', '嫌悪', '信頼']
 
 
@@ -100,12 +101,12 @@ for i, sentiment in enumerate(sentiment_names):
     df[sentiment] = [scores[i] for scores in all_sentiment_scores]
 
 # 2つ目の感情スコアをデータフレームに追加
-emotion_df = pd.DataFrame(all_emotion_scores, columns=emotion_names_jp)
+emotion_df = pd.DataFrame(all_emotion_scores, columns=emotion_names)
 df = pd.concat([df.reset_index(drop=True), emotion_df.reset_index(drop=True)], axis=1)
 
 # スコアが最も高い感情をラベルとして追加
 df['Sentiment_Label'] = df[sentiment_names].idxmax(axis=1)
-df['Emotion_Label'] = df[emotion_names_jp].idxmax(axis=1)
+df['Emotion_Label'] = df[emotion_names].idxmax(axis=1)
 
 # 時間を10秒単位に切り捨て
 df['Time_in_10s'] = (df['Time_in_seconds'] // 10) * 10
@@ -128,7 +129,7 @@ axes[0].legend(title='感情', loc='upper right')
 axes[0].grid(True)
 
 # 2つ目の感情分析結果
-for emotion in emotion_names_jp:
+for emotion in emotion_names:
     if emotion in emotion_counts.columns:
         axes[1].plot(emotion_counts.index, emotion_counts[emotion], marker='o', linestyle='-', label=emotion)
 

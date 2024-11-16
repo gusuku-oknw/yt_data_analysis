@@ -28,7 +28,8 @@ def prompt_clip_api_call(text):
     message = [
         {"role": "user", "content": "今から入力されるテキストは切り抜き動画の概要欄です。 \
         このテキストの中で元動画を指しているURLを教えて下さい。このときの返答としてはURLのみを出力してください \
-        URLがない場合はNoneと返してください"},
+        URLがない場合はNoneと返してください \
+        URLが不完全である場合は修正してください。"},
         {"role": "user", "content": text}
     ]
     try:
