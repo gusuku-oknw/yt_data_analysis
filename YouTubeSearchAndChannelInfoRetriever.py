@@ -44,6 +44,7 @@ def prompt_clip_api_call(text):
         print("エラーが発生しました:", str(e))
         translated_text = "エラーが発生しました。"
 
+    print(translated_text)
     return translated_text
 
 
@@ -245,7 +246,7 @@ def save2csv(data, filename, fieldnames):
 
 def search_main():
     # 検索キーワードを指定
-    search_keyword = "ホロライブ　切り抜き"
+    search_keyword = "博衣こより　切り抜き"
     # 動画を検索
     videos = search_videos(search_keyword, max_results=100)
     formatted_videos = []
@@ -287,29 +288,31 @@ def search_main():
 # チャンネルの人気動画を取得
 def get_channel_csv():
     """
-    channel_list.csv を読み込んで Channel Description 部分を取得し、
-    prompt_clip_api_call を使って処理を実行する関数。
+    channel_list.csv を読み込んで Video Description 部分を取得し、
+    prompt_clip_api_call を使って処理を実行し、結果を新しいカラム 'Original videoURL' として追加。
     """
-    file_name = "ホロライブ　切り抜き_2024-11-16_18-26-28_videos.csv"
+    file_name = "data/博衣こより　切り抜き_2024-11-16_20-48-51_videos.csv"
 
     try:
         # CSVファイルを読み込む
         df = pd.read_csv(file_name, encoding="utf-8-sig")
 
-        # 'Channel Description'カラムが存在するか確認
-        if "Channel Description" not in df.columns:
-            print("CSVファイルに 'Channel Description' カラムが見つかりませんでした。")
+        # 'Video Description'カラムが存在するか確認
+        if "Video Description" not in df.columns:
+            print("CSVファイルに 'Video Description' カラムが見つかりませんでした。")
             return
 
-        # 'Channel Description'カラムの最初の1件を取得
-        first_description = df["Channel Description"].iloc[1]
+        # 'Video Description' カラムの欠損値を空文字列に置き換え
+        df["Video Description"] = df["Video Description"].fillna("").astype(str)
 
-        print(first_description)
-        # prompt_clip_api_call 関数で使用
-        result = prompt_clip_api_call(first_description)
+        # 'Video Description'カラムに基づいて新しいカラム 'Original videoURL' を作成
+        df['Original URL'] = df['Video Description'].apply(prompt_clip_api_call)
 
-        # 結果を表示
-        print("API呼び出し結果:", result)
+        # 処理結果を新しいCSVに保存
+        output_file_name = file_name.replace(".csv", "_processed.csv")
+        df.to_csv(output_file_name, index=False, encoding="utf-8-sig")
+
+        print(f"処理が完了しました。結果は {output_file_name} に保存されています。")
 
     except FileNotFoundError:
         print(f"{file_name} が見つかりませんでした。")
