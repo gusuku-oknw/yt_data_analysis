@@ -7,7 +7,7 @@ import torch
 import re
 from tqdm import tqdm
 
-file_path = 'data/chat_messages=SH6HQFhgQ54.csv'
+file_path = 'data/chat_messages/chat_messages=SH6HQFhgQ54.csv'
 
 # CSVファイルの読み込み
 df = pd.read_csv(file_path)

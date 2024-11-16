@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # CSVファイルの読み込み
-input_file = 'output/chat_messages_with_sentiment_bert-finetuned=lFL06DmvdFU.csv.csv'
+input_file = 'data/emotion/chat_messages_with_sentiment_bert-finetuned=lFL06DmvdFU.csv.csv'
 df = pd.read_csv(input_file)
 
 # 必要な列の存在を確認して追加

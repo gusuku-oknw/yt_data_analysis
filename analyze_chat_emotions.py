@@ -12,7 +12,7 @@ import matplotlib
 matplotlib.rcParams['font.family'] = 'Meiryo'
 
 # ファイルパスの設定
-file_path = 'data/chat_messages=SH6HQFhgQ54.csv'  # 解析したいCSVファイルのパスを指定してください
+file_path = 'data/chat_messages/chat_messages=SH6HQFhgQ54.csv'  # 解析したいCSVファイルのパスを指定してください
 
 
 # データの読み込みと前処理

@@ -319,6 +319,7 @@ def get_channel_csv():
     except Exception as e:
         print("エラーが発生しました:", str(e))
 
+
 def get_popular_main():
     # チャンネルの人気動画を取得
     channel_id = "UCs6nmQViDpUw0nuIx9c_WvA"  # ProgrammingKnowledgeのチャンネルID
