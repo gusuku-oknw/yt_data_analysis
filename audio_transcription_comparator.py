@@ -1,5 +1,8 @@
 import os
-
+import soundfile as sf
+from transformers import pipeline
+from datasets import load_dataset
+import numpy as np
 from openunmix import predict
 from yt_dlp import YoutubeDL
 from faster_whisper import WhisperModel
@@ -13,9 +16,9 @@ from pydub import AudioSegment
 
 
 # 音声ファイルを文字起こし
-def distil_whisper(audio_file):
+def kotoba_whisper(audio_file):
     """
-    Distil-Whisperを使用して音声を文字起こし。
+    kotoba-Whisperを使用して音声を文字起こし。
 
     Parameters:
         audio_file (str): 入力音声ファイルのパス。
@@ -23,31 +26,72 @@ def distil_whisper(audio_file):
     Returns:
         str: 文字起こし結果。
     """
+    # モデルの設定
+    model_id = "kotoba-tech/kotoba-whisper-v1.0"
+    torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    torch_dtype = torch.float32  # モデルと入力データを float32 に固定
-    model_id = "distil-whisper/distil-large-v3"
+    model_kwargs = {"attn_implementation": "sdpa"} if torch.cuda.is_available() else {}
+    generate_kwargs = {
+        "task": "transcribe",
+        "return_timestamps": True,
+        "language": "japanese"  # 日本語指定
+    }
 
-    # モデルとプロセッサをロード
-    model = AutoModelForSpeechSeq2Seq.from_pretrained(
-        model_id,
+    # モデルのロード
+    pipe = pipeline(
+        "automatic-speech-recognition",
+        model=model_id,
         torch_dtype=torch_dtype,
-        low_cpu_mem_usage=True
-    ).to(device)
+        device=device,
+        model_kwargs=model_kwargs
+    )
 
-    processor = AutoProcessor.from_pretrained(model_id)
+    # 音声ファイルの読み込み
+    audio, sampling_rate = librosa.load(audio_file, sr=16000)
 
-    # 音声データの読み込み
-    audio, _ = librosa.load(audio_file, sr=16000)
+    # 音声データを辞書形式に変換
+    audio_input = {"raw": audio, "sampling_rate": sampling_rate}
 
-    # 型を float32 に統一
-    audio_tensor = torch.tensor(audio, dtype=torch.float32, device=device).unsqueeze(0)
+    # 推論の実行
+    result = pipe(audio_input, generate_kwargs=generate_kwargs)
 
-    # モデル推論
-    inputs = processor(audio_tensor.cpu().numpy(), return_tensors="pt", sampling_rate=16000).to(device)
-    with torch.no_grad():
-        generated_ids = model.generate(inputs["input_features"])
+    # 文字起こし結果を表示
+    print("文字起こし結果:", result["text"])
+    return result["text"]
 
-    return processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+# 音声ファイルを文字起こし（fast-whisper）
+def fast_whisper_transcription(audio_file, model_size="base", device="cuda", compute_type="float16"):
+    """
+    fast-whisper を使用して音声を文字起こし。
+
+    Parameters:
+        audio_file (str): 入力音声ファイルのパス。
+        model_size (str): 使用するモデルサイズ（例: "large-v2", "medium", "small"）。
+        device (str): 使用するデバイス（例: "cuda", "cpu"）。
+        compute_type (str): 演算の型（例: "float16", "float32"）。
+
+    Returns:
+        str: 文字起こし結果。
+    """
+    # モデルのロード
+    model = WhisperModel(model_size, device=device, compute_type=compute_type)
+
+    # 音声データのサンプリングレートを確認し、必要なら変換
+    audio, _ = librosa.load(audio_file, sr=16000)  # サンプリングレートを16kHzに統一
+    temp_wav = f"{os.path.splitext(audio_file)[0]}_temp.wav"
+
+    # 音声データを一時ファイルに保存（soundfileを使用）
+    sf.write(temp_wav, audio, samplerate=16000)
+
+    # 文字起こしの実行
+    segments, _ = model.transcribe(temp_wav, language="ja")
+
+    # 一時ファイルを削除
+    os.remove(temp_wav)
+
+    # 文字起こし結果を連結して返す
+    transcription = " ".join([segment.text for segment in segments])
+    return transcription
 
 
 # テキストの類似度を計算
@@ -243,8 +287,8 @@ if __name__ == "__main__":
 
     # ステップ2: Distil-Whisperで文字起こし
     print("元配信音声を文字起こし中...")
-    source_text = distil_whisper(source_audio)
-    print(f"元配信文字起こし結果: {source_text}")
+    # source_text = distil_whisper(source_audio)
+    # print(f"元配信文字起こし結果: {source_text}")
 
     print("切り抜き音声を文字起こし中...")
     clipping_text = distil_whisper(clipping_audio)
