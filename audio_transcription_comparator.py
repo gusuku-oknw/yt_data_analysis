@@ -93,7 +93,6 @@ def fast_whisper_transcription(audio_file, model_size="base", device="cuda", com
     transcription = " ".join([segment.text for segment in segments])
     return transcription
 
-
 # テキストの類似度を計算
 def compare_texts(text1, text2):
     """
@@ -107,7 +106,6 @@ def compare_texts(text1, text2):
         float: 類似度（0～1）。
     """
     return SequenceMatcher(None, text1, text2).ratio()
-
 
 # YouTube動画または音声をダウンロード
 def download_yt_sound(url, output_dir="data/sound", audio_only=True):
@@ -287,11 +285,11 @@ if __name__ == "__main__":
 
     # ステップ2: Distil-Whisperで文字起こし
     print("元配信音声を文字起こし中...")
-    # source_text = distil_whisper(source_audio)
+    # source_text = kotoba_whisper(source_audio)
     # print(f"元配信文字起こし結果: {source_text}")
 
     print("切り抜き音声を文字起こし中...")
-    clipping_text = distil_whisper(clipping_audio)
+    clipping_text = kotoba_whisper(clipping_audio)
     print(f"切り抜き文字起こし結果: {clipping_text}")
 
     # ステップ3: テキストの比較
