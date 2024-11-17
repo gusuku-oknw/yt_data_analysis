@@ -1,7 +1,10 @@
+import time
+
 import pandas as pd
 import chat_download
 import re
 import os
+from tqdm import tqdm
 
 def split_urls(row):
     """
@@ -111,8 +114,11 @@ def list_original_urls(csv_file, base_directory="data/chat_messages", url_column
     target_directory = create_directory(base_directory, csv_file.split('_', 1)[0])
 
     valid_urls = list(set(valid_urls))  # 重複を除去してリストに変換
+    print(len(valid_urls), "個の有効なURLが見つかりました。")
 
     for valid_url in valid_urls:
+        time.sleep(2)  # 10秒待機
+
         # 動画IDを取得してファイル名を生成
         video_id = chat_download.get_video_id_from_url(chat_download.remove_query_params(valid_url))
         file_name = f"{video_id}.csv"  # 保存するファイル名
@@ -120,16 +126,22 @@ def list_original_urls(csv_file, base_directory="data/chat_messages", url_column
 
         # ファイルが既に存在する場合はスキップ
         if os.path.exists(file_path):
-            print(f"ファイルが既に存在します。スキップします: {file_path}")
+            print(f"\rファイルが既に存在します。スキップします: {file_path}")
             continue
 
         # チャット取得処理を実行
         try:
-            print(f"処理中のURL: {valid_url}")
+            print(f"\r処理中のURL: {valid_url}")
             chat_download.chat_download_csv(valid_url, target_directory)
-            print(f"チャットデータを保存しました: {valid_url}")
+            print(f"\rチャットデータを保存しました: {valid_url}")
         except Exception as e:
-            print(f"エラーが発生しました: {e} - URL: {valid_url}")
+            if "Private video" in str(e):
+                print(f"プライベート動画のためスキップします: {valid_url}")
+            else:
+                print(f"\rエラーが発生しました: {e} - URL: {valid_url}")
+
+    # 最後のメッセージを改行して整える
+    print("\nすべての処理が完了しました")
 
 
 # 実行例

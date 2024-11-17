@@ -46,17 +46,19 @@ def get_video_id_from_url(url):
 
 def remove_query_params(url):
     """
-    クエリパラメータを除去したURLを返す。
-
-    Parameters:
-        url (str): 元のURL。
-
-    Returns:
-        str: クエリパラメータを除去したURL。
+    クエリパラメータを削除する。ただし、YouTube動画ID (v=) は保持。
     """
     parsed_url = urlparse(url)
-    clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
-    return clean_url
+    query_params = parse_qs(parsed_url.query)
+
+    # v= パラメータが存在する場合は保持
+    if "v" in query_params:
+        base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+        return f"{base_url}?v={query_params['v'][0]}"
+    else:
+        # v= パラメータがない場合は完全にクエリを削除
+        return f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+
 
 def chat_download_csv(url, directory=None):
     # 抽出データのリスト
@@ -101,7 +103,7 @@ def chat_download_csv(url, directory=None):
             print(f"ディレクトリ '{directory}' が存在しません。")
     else:
         df.to_csv(f'./{file_name}.csv', index=False, encoding='utf-8-sig')
-    print(f"CSVファイル '{file_name}.csv' が作成されました。")
+    print(f"\rCSVファイル '{file_name}.csv' が作成されました。")
 
 
 # ガター内の緑色のボタンを押すとスクリプトを実行します。

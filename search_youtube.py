@@ -27,7 +27,7 @@ def prompt_clip_api_call(text):
 
     message = [
         {"role": "user", "content": "今から入力されるテキストは切り抜き動画の概要欄です。 \
-        このテキストの中で元動画を指しているURLを教えて下さい。このときの返答としてはURLのみを出力してください \
+        このテキストの中で元動画を指しているURLを教えて下さい。このときの返答としてはURLのみを出力してください。複数の場合は改行して出力してください \
         URLがない場合はNoneと返してください \
         URLが不完全である場合は修正してください。"},
         {"role": "user", "content": text}
@@ -292,7 +292,7 @@ def get_channel_csv():
     channel_list.csv を読み込んで Video Description 部分を取得し、
     prompt_clip_api_call を使って処理を実行し、結果を新しいカラム 'Original videoURL' として追加。
     """
-    file_name = "data/博衣こより　切り抜き_2024-11-16_20-48-51_videos.csv"
+    file_name = "data/ホロライブ　切り抜き_2024-11-16_18-26-28_videos.csv"
 
     try:
         # CSVファイルを読み込む
