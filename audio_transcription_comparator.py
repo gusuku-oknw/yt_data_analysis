@@ -1,4 +1,6 @@
 import os
+import traceback
+
 import soundfile as sf
 from transformers import pipeline
 from datasets import load_dataset
@@ -13,6 +15,8 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 import librosa
 from chat_download import get_video_id_from_url, remove_query_params
 from pydub import AudioSegment
+
+from audio_transcriber import AudioTranscriber
 
 
 # 音声ファイルを文字起こし
@@ -265,6 +269,33 @@ def separate_audio_with_demucs(audio_file, output_dir, model_name="mdx_extra_q",
         print(f"Demucs分離エラー: {e}")
         raise
 
+def audio_transcription(audio_path):
+    """
+    音声ファイルを文字起こし。
+
+    Parameters:
+        audio_file (str): 入力音声ファイル。
+
+    Returns:
+        str: 文字起こし結果。
+    """
+    silences = []
+
+    try:
+        transcriber = AudioTranscriber()
+        if not os.path.exists(audio_path):
+            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+        # 無音区間と文字起こしを行う
+        silences = transcriber.transcribe_segment(audio_path)
+        print("Detected silences:")
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        print(traceback.format_exc())
+
+    return silences
+
 
 if __name__ == "__main__":
     # 元配信URLと切り抜きURL
@@ -285,13 +316,13 @@ if __name__ == "__main__":
 
     # ステップ2: Distil-Whisperで文字起こし
     print("元配信音声を文字起こし中...")
-    # source_text = kotoba_whisper(source_audio)
-    # print(f"元配信文字起こし結果: {source_text}")
+    source_silences = audio_transcription(source_audio)
+    # print(f"元配信文字起こし結果: {source_silences}")
 
     print("切り抜き音声を文字起こし中...")
-    clipping_text = kotoba_whisper(clipping_audio)
-    print(f"切り抜き文字起こし結果: {clipping_text}")
+    clipping_silences = audio_transcription(clipping_audio)
+    print(f"切り抜き文字起こし結果: {clipping_silences}")
 
     # ステップ3: テキストの比較
-    similarity = compare_texts(source_text, clipping_text)
+    similarity = compare_texts(source_silences, clipping_silences)
     print(f"セリフの類似度: {similarity * 100:.2f}%")

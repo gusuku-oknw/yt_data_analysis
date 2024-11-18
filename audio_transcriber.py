@@ -2,10 +2,12 @@ import os
 import time
 import librosa
 import torch
+from pydub import AudioSegment, silence  # silence モジュールをインポート
 from transformers import pipeline
 import soundfile as sf
 import numpy as np
 import traceback
+import subprocess
 
 
 class AudioTranscriber:
@@ -14,51 +16,68 @@ class AudioTranscriber:
 
     # 無音部分の検出
     @staticmethod
-    def detect_silence(data, samplerate, threshold=0.05, min_silence_duration=0.5):
-        amp = np.abs(data)  # 信号の絶対値を取得
-        silence_flags = amp <= threshold  # 閾値以下が「無音」
+    def detect_silence(audio_file, silence_thresh=-25, min_silence_len=50):
+        """
+        音声ファイルから無音部分を検出。
 
-        if silence_flags.ndim != 1:
-            raise ValueError("silence_flags must be a 1D array. Check the input data.")
+        Parameters:
+            audio_file (str): 入力音声ファイルのパス。
+            silence_thresh (int): 無音とみなす音量の閾値（デフォルト: -50dB）。
+            min_silence_len (int): 無音とみなす最小の継続時間（デフォルト: 500ms）。
 
-        silences = []  # 無音区間を記録するリスト
-        prev = False  # 前のサンプルが無音かどうか
-        entered = None  # 無音区間の開始位置
+        Returns:
+            list: 無音区間のリスト [{'from': 開始位置, 'to': 終了位置, 'suffix': 'cut'}]。
+        """
+        try:
+            # 音声ファイルを読み込む
+            audio = AudioSegment.from_file(audio_file)
 
-        for i in range(len(silence_flags)):  # silence_flags を1要素ずつ処理
-            v = silence_flags[i]  # 単一の値を取得（NumPy配列内のブール値）
+            # 無音部分の開始・終了時間を検出
+            silence_ranges = silence.detect_silence(
+                audio,
+                min_silence_len=min_silence_len,
+                silence_thresh=silence_thresh
+            )
 
-            if not prev and v:  # 無音が開始
-                entered = i
-            elif prev and not v and entered is not None:  # 無音が終了
-                duration = (i - entered) / samplerate
-                if duration >= min_silence_duration:  # 無音区間の長さが閾値以上の場合
-                    silences.append({"from": entered, "to": i, "suffix": "cut"})
-                entered = None  # 開始位置をリセット
+            # 無音区間をリスト化
+            silences = [
+                {"from": start / 1000.0, "to": end / 1000.0, "suffix": "cut"}  # ミリ秒を秒に変換
+                for start, end in silence_ranges
+            ]
 
-            prev = v  # 状態を更新
+            return silences
 
-        # 最後の無音区間がリストに含まれていない場合の処理
-        if prev and entered is not None:
-            duration = (len(silence_flags) - entered) / samplerate
-            if duration >= min_silence_duration:
-                silences.append({"from": entered, "to": len(silence_flags), "suffix": "cut"})
-
-        return silences
+        except Exception as e:
+            print(f"エラーが発生しました: {e}")
+            return []
 
     @staticmethod
     def get_keep_blocks(silences, data_len, samplerate, padding_time=0.2):
+        """
+        無音区間の外側を保持するブロックを計算。
+
+        Parameters:
+            silences (list): 無音区間のリスト（例: [[start, end], ...]）。
+            data_len (int): オーディオデータの長さ（サンプル数）。
+            samplerate (int): サンプルレート。
+            padding_time (float): 保持する区間に加える余白時間（秒）。
+
+        Returns:
+            list: 保持する区間のリスト。
+        """
         keep_blocks = []
 
+        # 無音区間の外側を計算
         for i, block in enumerate(silences):
-            if i == 0 and block["from"] > 0:
-                keep_blocks.append({"from": 0, "to": block["from"], "suffix": "keep"})
+            if i == 0 and block[0] > 0:
+                keep_blocks.append({"from": 0, "to": block[0], "suffix": "keep"})
             if i > 0:
                 prev = silences[i - 1]
-                keep_blocks.append({"from": prev["to"], "to": block["from"], "suffix": "keep"})
-            if i == len(silences) - 1 and block["to"] < data_len:
-                keep_blocks.append({"from": block["to"], "to": data_len, "suffix": "keep"})
+                keep_blocks.append({"from": prev[1], "to": block[0], "suffix": "keep"})
+            if i == len(silences) - 1 and block[1] < data_len:
+                keep_blocks.append({"from": block[1], "to": data_len, "suffix": "keep"})
 
+        # 秒単位に変換し、余白を追加
         for block in keep_blocks:
             block["from"] = max(block["from"] / samplerate - padding_time, 0)
             block["to"] = min(block["to"] / samplerate + padding_time, data_len / samplerate)
@@ -66,23 +85,51 @@ class AudioTranscriber:
         return keep_blocks
 
     @staticmethod
-    def save_audio_segments(data, keep_blocks, samplerate):
-        output_dir = os.path.join("./content", "audio_segments_{}".format(int(time.time())))
+    def save_audio_segments(audio, keep_blocks, samplerate):
+        """
+        音声セグメントを指定のフォルダに保存します。
 
+        Parameters:
+            audio (AudioSegment): 入力音声データ（pydub AudioSegment オブジェクト）。
+            keep_blocks (list): 保存する区間のリスト。
+            samplerate (int): サンプルレート。
+
+        Returns:
+            list: 保存されたセグメントファイルの絶対パスのリスト。
+        """
+        # 修正された出力ディレクトリの設定
+        output_dir = os.path.join("content", "audio_segments_{}".format(int(time.time())))
+
+        # 出力ディレクトリが存在しない場合に作成
         os.makedirs(output_dir, exist_ok=True)
 
         segment_files = []
+
+        # pydub AudioSegment を numpy.ndarray に変換
+        data = np.array(audio.get_array_of_samples()) / (2 ** (audio.sample_width * 8 - 1))
+        if audio.channels > 1:
+            print("Stereo audio detected, converting to mono.")
+            data = data.reshape((-1, audio.channels)).mean(axis=1)  # ステレオ -> モノラル
+
         for i, block in enumerate(keep_blocks):
+            # サンプル単位の開始と終了位置を計算
             start_sample = int(block["from"] * samplerate)
             end_sample = int(block["to"] * samplerate)
 
             if start_sample < end_sample <= len(data):
+                # セグメントを抽出
                 segment_data = data[start_sample:end_sample]
+
+                # 保存先のファイルパスを生成
                 output_file = os.path.join(output_dir, f"segment_{i:02d}.wav")
 
-                sf.write(output_file, segment_data, samplerate)
-                segment_files.append(os.path.abspath(output_file))
-                print(f"Saved segment {i}: {output_file}")
+                # ファイルを保存
+                try:
+                    sf.write(output_file, segment_data, samplerate)
+                    segment_files.append(os.path.abspath(output_file))
+                    print(f"Saved segment {i}: {output_file}")
+                except Exception as e:
+                    print(f"Error saving segment {i}: {e}")
             else:
                 print(f"Skipped invalid segment {i}: start={start_sample}, end={end_sample}")
 
@@ -122,6 +169,19 @@ class AudioTranscriber:
         result = pipe(audio_input, generate_kwargs=generate_kwargs)
         print("文字起こし結果:", result["text"])
         return result["text"]
+
+    @staticmethod
+    def extract_vocals(audio_file):
+        # ディレクトリのルートを取得
+        root_directory = os.path.dirname(audio_path)
+
+        # ボーカルを抽出
+        command = ["demucs", "-d", "cuda", "-o", root_directory, audio_file]
+        subprocess.run(command, check=True)
+        # ファイル名を取得
+        basename = os.path.splitext(os.path.basename(audio_file))[0]
+
+        return f"{root_directory}/htdemucs/{basename}/vocals.wav"
 
     def transcribe_audio_and_split_video(self, segment_files, keep_blocks):
         transcriptions = []
@@ -164,31 +224,71 @@ class AudioTranscriber:
         return transcriptions
 
     def transcribe_segment(self, audio_path):
-        # オーディオデータを読み込む
-        data, samplerate = sf.read(audio_path)
+        """
+        音声ファイルを処理し、無音区間の外側を保持して文字起こしを行う。
 
-        # ステレオデータの場合はモノラルに変換
-        if data.ndim > 1:  # 2次元の場合（ステレオ音声）
-            print("Stereo audio detected, converting to mono.")
-            data = np.mean(data, axis=1)  # 左右チャンネルを平均化してモノラルに変換
+        Parameters:
+            audio_path (str): 入力音声ファイルのパス。
 
-        # 無音区間を検出
-        silences = self.detect_silence(data, samplerate)
-        print(f'silences: {silences}')
+        Returns:
+            list: 文字起こし結果。
+        """
 
-        # 無音区間の外側を保持するブロックを計算
-        keep_blocks = self.get_keep_blocks(silences, len(data), samplerate)
-        print(f'keep_blocks: {keep_blocks}')
+        try:
+            # ボーカルのみを抽出
+            audio_path = self.extract_vocals(audio_path)
 
-        # 音声セグメントを保存
-        segment_files = self.save_audio_segments(data, keep_blocks, samplerate)
-        print(f'segment_files: {segment_files}')
+            # オーディオデータを読み込む
+            audio = AudioSegment.from_file(audio_path)
 
-        # 各セグメントを文字起こし
-        transcriptions = self.transcribe_audio_and_split_video(segment_files, keep_blocks)
-        print(f'transcriptions: {transcriptions}')
+            # ステレオデータの場合はモノラルに変換
+            if audio.channels > 1:
+                print("Stereo audio detected, converting to mono.")
+                audio = audio.set_channels(1)
 
-        return transcriptions
+            # 無音区間を検出
+            percentile = 99
+            amplitudes = np.abs(np.array(audio.get_array_of_samples()))
+
+            # 振幅のパーセンタイルをdBFSに変換
+            silence_thresh = max(-40, 20 * np.log10(np.percentile(amplitudes, percentile)))  # -40dBFSを下限
+            print(f"Calculated silence threshold: -{silence_thresh} dBFS")
+
+            # 無音区間を検出
+            silences = silence.detect_silence(
+                audio,
+                min_silence_len=1100,  # 無音と判定する最小持続時間 (ms)
+                silence_thresh=-silence_thresh  # 動的に計算した閾値
+            )
+
+            print(f"Detected silences: {silences}")
+
+            # サンプリングレートを取得
+            samplerate = audio.frame_rate
+
+            # 無音区間の外側を保持するブロックを計算
+            keep_blocks = self.get_keep_blocks(
+                silences=silences,
+                data_len=len(audio.get_array_of_samples()),
+                samplerate=samplerate,
+                padding_time=0.2
+            )
+
+            print(f"Keep blocks: {keep_blocks}")
+
+            # 音声セグメントを保存
+            segment_files = self.save_audio_segments(audio, keep_blocks, samplerate=samplerate)
+            print(f"Segment files: {segment_files}")
+
+            # 各セグメントを文字起こし
+            transcriptions = self.transcribe_audio_and_split_video(segment_files, keep_blocks)
+            print(f"Transcriptions: {transcriptions}")
+
+            return transcriptions
+
+        except Exception as e:
+            print(f"Error processing audio file {audio_path}: {e}")
+            return []
 
 
 if __name__ == "__main__":
@@ -198,7 +298,7 @@ if __name__ == "__main__":
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-        # 無音区間を検出
+        # 無音区間と文字起こしを行う
         silences = transcriber.transcribe_segment(audio_path)
         print("Detected silences:")
         for silence in silences:
