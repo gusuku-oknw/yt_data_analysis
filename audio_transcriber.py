@@ -86,43 +86,6 @@ class AudioTranscriber:
             traceback.print_exc()
             return []
 
-    # 無音部分の検出
-    @staticmethod
-    def detect_silence(audio_file, silence_thresh=-25, min_silence_len=50):
-        """
-        音声ファイルから無音部分を検出。
-
-        Parameters:
-            audio_file (str): 入力音声ファイルのパス。
-            silence_thresh (int): 無音とみなす音量の閾値（デフォルト: -50dB）。
-            min_silence_len (int): 無音とみなす最小の継続時間（デフォルト: 500ms）。
-
-        Returns:
-            list: 無音区間のリスト [{'from': 開始位置, 'to': 終了位置, 'suffix': 'cut'}]。
-        """
-        try:
-            # 音声ファイルを読み込む
-            audio = AudioSegment.from_file(audio_file)
-
-            # 無音部分の開始・終了時間を検出
-            silence_ranges = silence.detect_silence(
-                audio,
-                min_silence_len=min_silence_len,
-                silence_thresh=silence_thresh
-            )
-
-            # 無音区間をリスト化
-            silences = [
-                {"from": start / 1000.0, "to": end / 1000.0, "suffix": "cut"}  # ミリ秒を秒に変換
-                for start, end in silence_ranges
-            ]
-
-            return silences
-
-        except Exception as e:
-            print(f"エラーが発生しました: {e}")
-            return []
-
     @staticmethod
     def get_keep_blocks(silences, data_len, samplerate, padding_time=0.2):
         """
@@ -253,7 +216,7 @@ class AudioTranscriber:
     @staticmethod
     def extract_vocals(audio_file):
         # ディレクトリのルートを取得
-        root_directory = os.path.dirname(audio_path)
+        root_directory = os.path.dirname(audio_file)
 
         # ボーカルを抽出
         command = ["demucs", "-d", "cuda", "-o", root_directory, audio_file]
@@ -313,42 +276,37 @@ class AudioTranscriber:
         Returns:
             list: 文字起こし結果。
         """
+        print(f"Transcribing audio file: {audio_path}")
+        # ボーカルのみを抽出
+        audio_path = self.extract_vocals(audio_path)
+        # audio_path = 'data/sound/clipping_audio_wav/htdemucs/7-1fNxXj_xM/vocals.wav'
+        # オーディオデータを読み込む
+        audio = AudioSegment.from_file(audio_path)
 
-        try:
-            # ボーカルのみを抽出
-            # audio_path = self.extract_vocals(audio_path)
-            audio_path = 'data/sound/clipping_audio_wav/htdemucs/7-1fNxXj_xM/vocals.wav'
-            # オーディオデータを読み込む
-            audio = AudioSegment.from_file(audio_path)
+        silences = self.SileroVAD_detect_silence(audio_path)
 
-            silences = self.SileroVAD_detect_silence(audio_path)
+        # サンプリングレートを取得
+        samplerate = audio.frame_rate
 
-            # サンプリングレートを取得
-            samplerate = audio.frame_rate
+        # 無音区間の外側を保持するブロックを計算
+        keep_blocks = self.get_keep_blocks(
+            silences=silences,
+            data_len=len(audio.get_array_of_samples()),
+            samplerate=samplerate,
+            padding_time=0.2
+        )
 
-            # 無音区間の外側を保持するブロックを計算
-            keep_blocks = self.get_keep_blocks(
-                silences=silences,
-                data_len=len(audio.get_array_of_samples()),
-                samplerate=samplerate,
-                padding_time=0.2
-            )
+        print(f"Keep blocks: {keep_blocks}")
 
-            print(f"Keep blocks: {keep_blocks}")
+        # 音声セグメントを保存
+        segment_files = self.save_audio_segments(audio, keep_blocks, samplerate=samplerate)
+        print(f"Segment files: {segment_files}")
 
-            # 音声セグメントを保存
-            segment_files = self.save_audio_segments(audio, keep_blocks, samplerate=samplerate)
-            print(f"Segment files: {segment_files}")
+        # 各セグメントを文字起こし
+        transcriptions = self.transcribe_audio_and_split_video(segment_files, keep_blocks)
+        print(f"Transcriptions: {transcriptions}")
 
-            # 各セグメントを文字起こし
-            transcriptions = self.transcribe_audio_and_split_video(segment_files, keep_blocks)
-            print(f"Transcriptions: {transcriptions}")
-
-            return transcriptions
-
-        except Exception as e:
-            print(f"Error processing audio file {audio_path}: {e}")
-            return []
+        return transcriptions
 
 
 if __name__ == "__main__":

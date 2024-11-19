@@ -1,6 +1,7 @@
 import os
 import traceback
 
+import pandas as pd
 import soundfile as sf
 from transformers import pipeline
 from datasets import load_dataset
@@ -15,6 +16,7 @@ from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 import librosa
 from chat_download import get_video_id_from_url, remove_query_params
 from pydub import AudioSegment
+from charset_normalizer import detect
 
 from audio_transcriber import AudioTranscriber
 
@@ -197,30 +199,59 @@ def get_demucs_output_path(output_dir, audio_file):
 
     return vocals_path
 
-def audio_transcription(audio_path):
+def audio_transcription2csv(audio_path, output_directory):
     """
-    音声ファイルを文字起こし。
+    音声ファイルを文字起こしし、結果をCSVファイルに保存または既存のCSVを読み込み。
 
     Parameters:
-        audio_file (str): 入力音声ファイル。
+        audio_path (str): 入力音声ファイルのパス。
+        output_directory (str): 出力CSVファイルのディレクトリ。
 
     Returns:
-        str: 文字起こし結果。
+        list: 文字起こし結果（辞書形式のリスト）。
     """
     silences = []
+    # ファイル名を適切に生成
+    output_path = os.path.join(
+        output_directory, os.path.basename(audio_path).replace('.wav', '_transcription.csv')
+    )
 
-    try:
-        transcriber = AudioTranscriber()
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+    # CSVファイルが存在する場合、エンコーディングを検出して読み込む
+    if os.path.exists(output_path):
+        print(f"CSVファイルが既に存在します: {output_path} を読み込みます...")
 
-        # 無音区間と文字起こしを行う
-        silences = transcriber.transcribe_segment(audio_path)
-        print("Detected silences:")
+        # ファイルのエンコーディングを検出
+        with open(output_path, 'rb') as f:
+            detected = detect(f.read())
+            encoding = detected['encoding']
+            print(f"検出されたエンコーディング: {encoding}")
 
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        print(traceback.format_exc())
+        # 正しいエンコーディングでCSVを読み込む
+        df = pd.read_csv(output_path, encoding=encoding)
+        silences = df.to_dict(orient="records")
+        return silences
+
+    # CSVファイルが存在しない場合、新たに作成
+    print(f"CSVファイルが存在しません: {output_path} を作成します...")
+    audio_path = "./data/sound/clipping_audio_wav/7-1fNxXj_xM.wav"
+
+    # 音声ファイルの処理（文字起こし）
+    transcriber = AudioTranscriber()
+    if not os.path.exists(os.path.abspath(audio_path)):
+        raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+    # 無音区間と文字起こしを行う
+    silences = transcriber.transcribe_segment(os.path.abspath(audio_path))
+    print("Detected silences:", silences)
+
+    # データフレームに変換
+    df = pd.DataFrame(silences)
+
+    # CSVファイルに保存
+    os.makedirs(output_directory, exist_ok=True)  # 出力ディレクトリの作成
+    df.to_csv(output_path, index=False, encoding="utf-8-sig")
+    print(f"CSVファイルに保存しました: {output_path}")
+
 
     return silences
 
@@ -237,20 +268,24 @@ if __name__ == "__main__":
     print("切り抜き音声をダウンロード中...")
     # clipping_audio = download_yt_sound(clipping_url, output_dir="data/sound/clipping_audio")
     # print(clipping_audio)
-
+    test = "./data"
     # test
-    source_audio = "data/sound/source_audio/O5Aa-5KqFPqQD8Xd.mp3"
-    clipping_audio = "data/sound/clipping_audio/7-1fNxXj_xM.mp3"
+    source_audio = "./data"
+    clipping_audio = "./data/sound/clipping_audio_wav/7-1fNxXj_xM.wav"
 
-    # ステップ2: Distil-Whisperで文字起こし
-    print("元配信音声を文字起こし中...")
-    source_silences = audio_transcription(source_audio)
-    # print(f"元配信文字起こし結果: {source_silences}")
+    # # ステップ2: Distil-Whisperで文字起こし
+    # print("元配信音声を文字起こし中...")
+    # source_silences = audio_transcription2csv(source_audio)
+    # # print(f"元配信文字起こし結果: {source_silences}")
 
+    # 切り抜き音声を文字起こししてCSVに保存
     print("切り抜き音声を文字起こし中...")
-    clipping_silences = audio_transcription(clipping_audio)
+    clipping_silences = audio_transcription2csv(
+        clipping_audio,
+        output_directory="data/sound/clipping_audio_transcription"
+    )
     print(f"切り抜き文字起こし結果: {clipping_silences}")
 
-    # ステップ3: テキストの比較
-    similarity = compare_texts(source_silences, clipping_silences)
-    print(f"セリフの類似度: {similarity * 100:.2f}%")
+    # # ステップ3: テキストの比較
+    # similarity = compare_texts(source_silences, clipping_silences)
+    # print(f"セリフの類似度: {similarity * 100:.2f}%")
