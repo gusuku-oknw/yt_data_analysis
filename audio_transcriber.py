@@ -14,6 +14,78 @@ class AudioTranscriber:
     def __init__(self):
         self.model_id = "kotoba-tech/kotoba-whisper-v1.0"
 
+    @staticmethod
+    def SileroVAD_detect_silence(audio_file, threshold=0.5, sampling_rate=16000):
+        """
+        Use Silero VAD to detect silence in an audio file.
+
+        Parameters:
+            audio_file (str): Path to the input audio file.
+            threshold (float): Confidence threshold to distinguish speech from silence (0-1, default: 0.5).
+            sampling_rate (int): Audio sampling rate (default: 16kHz).
+
+        Returns:
+            list: List of silence intervals [{'from': start_time, 'to': end_time, 'suffix': 'cut'}].
+        """
+        try:
+            # Load the Silero VAD model
+            model, utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                force_reload=True
+            )
+
+            # Unpack the utilities
+            (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
+
+            # Read the audio file
+            if not os.path.exists(audio_file):
+                raise FileNotFoundError(f"Audio file not found: {audio_file}")
+
+            audio_tensor = read_audio(audio_file, sampling_rate=sampling_rate)
+            print(f"Audio tensor size: {audio_tensor.shape}, dtype: {audio_tensor.dtype}")
+
+            # Detect speech segments
+            speech_timestamps = get_speech_timestamps(
+                audio_tensor, model,
+                threshold=threshold,
+                sampling_rate=sampling_rate
+            )
+            print(f"Detected speech timestamps: {speech_timestamps}")
+
+            if not speech_timestamps:
+                print(f"No speech detected in {audio_file}")
+                return []
+
+            # Calculate silence intervals
+            silences = []
+            last_end = 0
+            audio_length = audio_tensor.shape[-1]
+            for segment in speech_timestamps:
+                if last_end < segment['start']:
+                    silences.append({
+                        "from": last_end / sampling_rate,  # Convert samples to seconds
+                        "to": segment['start'] / sampling_rate,
+                        "suffix": "cut"
+                    })
+                last_end = segment['end']
+
+            # Add silence after the last speech segment
+            if last_end < audio_length:
+                print(f"Adding silence after last speech segment: {last_end} to {audio_length}")
+                silences.append({
+                    "from": last_end / sampling_rate,
+                    "to": audio_length / sampling_rate,
+                    "suffix": "cut"
+                })
+
+            return silences
+
+        except Exception as e:
+            print(f"An error occurred in SileroVAD_detect_silence: {e}")
+            traceback.print_exc()
+            return []
+
     # 無音部分の検出
     @staticmethod
     def detect_silence(audio_file, silence_thresh=-25, min_silence_len=50):
@@ -57,8 +129,8 @@ class AudioTranscriber:
         無音区間の外側を保持するブロックを計算。
 
         Parameters:
-            silences (list): 無音区間のリスト（例: [[start, end], ...]）。
-            data_len (int): オーディオデータの長さ（サンプル数）。
+            silences (list): 無音区間のリスト（例: [{"from": 秒数, "to": 秒数}, ...]）。
+            data_len (float): オーディオデータの長さ（秒単位）。
             samplerate (int): サンプルレート。
             padding_time (float): 保持する区間に加える余白時間（秒）。
 
@@ -67,22 +139,30 @@ class AudioTranscriber:
         """
         keep_blocks = []
 
-        # 無音区間の外側を計算
-        for i, block in enumerate(silences):
-            if i == 0 and block[0] > 0:
-                keep_blocks.append({"from": 0, "to": block[0], "suffix": "keep"})
-            if i > 0:
-                prev = silences[i - 1]
-                keep_blocks.append({"from": prev[1], "to": block[0], "suffix": "keep"})
-            if i == len(silences) - 1 and block[1] < data_len:
-                keep_blocks.append({"from": block[1], "to": data_len, "suffix": "keep"})
+        try:
+            # 無音区間の外側を計算
+            for i, block in enumerate(silences):
+                if i == 0 and block["from"] > 0:
+                    keep_blocks.append({"from": 0, "to": block["from"], "suffix": "keep"})
+                if i > 0:
+                    prev = silences[i - 1]
+                    keep_blocks.append({"from": prev["to"], "to": block["from"], "suffix": "keep"})
+                if i == len(silences) - 1 and block["to"] < data_len:
+                    keep_blocks.append({"from": block["to"], "to": data_len, "suffix": "keep"})
 
-        # 秒単位に変換し、余白を追加
-        for block in keep_blocks:
-            block["from"] = max(block["from"] / samplerate - padding_time, 0)
-            block["to"] = min(block["to"] / samplerate + padding_time, data_len / samplerate)
+            # 秒単位に変換し、余白を追加
+            for block in keep_blocks:
+                block["from"] = max(block["from"] - padding_time, 0)
+                block["to"] = min(block["to"] + padding_time, data_len)
 
-        return keep_blocks
+            return keep_blocks
+
+        except Exception as e:
+            print(f"Error in get_keep_blocks: {e}")
+            print(f"Input silences: {silences}")
+            print(f"Data length: {data_len}, Samplerate: {samplerate}")
+            print(traceback.format_exc())
+            return []
 
     @staticmethod
     def save_audio_segments(audio, keep_blocks, samplerate):
@@ -236,32 +316,12 @@ class AudioTranscriber:
 
         try:
             # ボーカルのみを抽出
-            audio_path = self.extract_vocals(audio_path)
-
+            # audio_path = self.extract_vocals(audio_path)
+            audio_path = 'data/sound/clipping_audio_wav/htdemucs/7-1fNxXj_xM/vocals.wav'
             # オーディオデータを読み込む
             audio = AudioSegment.from_file(audio_path)
 
-            # ステレオデータの場合はモノラルに変換
-            if audio.channels > 1:
-                print("Stereo audio detected, converting to mono.")
-                audio = audio.set_channels(1)
-
-            # 無音区間を検出
-            percentile = 99
-            amplitudes = np.abs(np.array(audio.get_array_of_samples()))
-
-            # 振幅のパーセンタイルをdBFSに変換
-            silence_thresh = max(-40, 20 * np.log10(np.percentile(amplitudes, percentile)))  # -40dBFSを下限
-            print(f"Calculated silence threshold: -{silence_thresh} dBFS")
-
-            # 無音区間を検出
-            silences = silence.detect_silence(
-                audio,
-                min_silence_len=1100,  # 無音と判定する最小持続時間 (ms)
-                silence_thresh=-silence_thresh  # 動的に計算した閾値
-            )
-
-            print(f"Detected silences: {silences}")
+            silences = self.SileroVAD_detect_silence(audio_path)
 
             # サンプリングレートを取得
             samplerate = audio.frame_rate
