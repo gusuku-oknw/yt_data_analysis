@@ -17,6 +17,8 @@ import librosa
 from chat_download import get_video_id_from_url, remove_query_params
 from pydub import AudioSegment
 from charset_normalizer import detect
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 from audio_transcriber import AudioTranscriber
 
@@ -100,18 +102,101 @@ def fast_whisper_transcription(audio_file, model_size="base", device="cuda", com
     return transcription
 
 # テキストの類似度を計算
-def compare_texts(text1, text2):
+def compare_texts(clipping_segments, source_segments, initial_threshold=1.0, time_margin=30.0):
     """
-    テキストの類似度を計算。
+    切り抜き動画と元動画を一致させる。
 
     Parameters:
-        text1 (str): テキスト1。
-        text2 (str): テキスト2。
+        clipping_segments (list): 切り抜き動画のセグメントリスト。
+        source_segments (list): 元動画のセグメントリスト。
+        initial_threshold (float): 初期の類似度しきい値。
+        time_margin (float): 探索範囲の時間（秒）。
 
     Returns:
-        float: 類似度（0～1）。
+        list: 一致したセグメントペアのリスト。
     """
-    return SequenceMatcher(None, text1, text2).ratio()
+
+    def calculate_similarity(text1, text2, method="sequence"):
+        """
+        テキスト間の類似度を指定の方法で計算。
+
+        Parameters:
+            text1 (str): テキスト1。
+            text2 (str): テキスト2。
+            method (str): 類似度計算方法 ("sequence", "jaccard", "cosine")。
+
+        Returns:
+            float: 類似度スコア（0～1）。
+        """
+        if method == "sequence":
+            return SequenceMatcher(None, text1, text2).ratio()
+        elif method == "jaccard":
+            set1 = set(text1.split())
+            set2 = set(text2.split())
+            intersection = len(set1 & set2)
+            union = len(set1 | set2)
+            return intersection / union if union != 0 else 0
+        elif method == "cosine":
+            vectorizer = CountVectorizer().fit_transform([text1, text2])
+            vectors = vectorizer.toarray()
+            return cosine_similarity(vectors)[0, 1]
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+    def find_best_match(segment, source_segments, threshold=0.8):
+        """
+        切り抜きセグメントに最も類似する元動画セグメントを探す。
+
+        Parameters:
+            segment (dict): 切り抜き動画のセグメント。
+            source_segments (list): 元動画のセグメントリスト。
+            threshold (float): 類似度のしきい値。
+
+        Returns:
+            dict or None: 一致した元動画セグメント情報。またはNone。
+        """
+        best_match = None
+        max_similarity = 0
+
+        for src in source_segments:
+            similarity = calculate_similarity(segment["text"], src["text"])
+            if similarity > max_similarity and similarity >= threshold:
+                best_match = src
+                max_similarity = similarity
+
+        return best_match
+
+    matches = []
+    search_range_start = 0
+    search_range_end = len(source_segments)
+
+    for clip in clipping_segments:
+        threshold = initial_threshold
+        while threshold > 0.5:  # 最低しきい値まで試行
+            # 探索範囲を絞り込み
+            filtered_segments = source_segments[search_range_start:search_range_end]
+            best_match = find_best_match(clip, filtered_segments, threshold)
+
+            if best_match:
+                matches.append({
+                    "clip_text": clip["text"],
+                    "clip_start": clip["start"],
+                    "clip_end": clip["end"],
+                    "source_text": best_match["text"],
+                    "source_start": best_match["start"],
+                    "source_end": best_match["end"],
+                    "similarity": calculate_similarity(clip["text"], best_match["text"])
+                })
+
+                # 次の探索範囲を絞り込み
+                search_range_start = max(0, best_match["start"] - time_margin)
+                search_range_end = min(len(source_segments), best_match["end"] + time_margin)
+                break
+
+            # 一致が見つからなければしきい値を下げる
+            threshold -= 0.1
+
+    return matches
 
 # YouTube動画または音声をダウンロード
 def download_yt_sound(url, output_dir="data/sound", audio_only=True):
@@ -210,7 +295,6 @@ def audio_transcription2csv(audio_path, output_directory):
     Returns:
         list: 文字起こし結果（辞書形式のリスト）。
     """
-    silences = []
     # ファイル名を適切に生成
     output_path = os.path.join(
         output_directory, os.path.basename(audio_path).replace('.wav', '_transcription.csv')
@@ -288,6 +372,6 @@ if __name__ == "__main__":
     )
     print(f"切り抜き文字起こし結果: {clipping_silences}")
 
-    # # ステップ3: テキストの比較
-    # similarity = compare_texts(source_silences, clipping_silences)
-    # print(f"セリフの類似度: {similarity * 100:.2f}%")
+    # ステップ3: テキストの比較
+    similarity = compare_texts(source_silences, clipping_silences)
+    print(f"セリフの類似度: {similarity * 100:.2f}%")

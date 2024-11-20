@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from difflib import SequenceMatcher
@@ -5,7 +6,7 @@ from difflib import SequenceMatcher
 
 def compare_texts(clipping_segments, source_segments, initial_threshold=1.0, time_margin=30.0):
     """
-    切り抜き動画と元動画を一致させる。
+    切り抜き動画と元動画を一致させる（並列処理を使用）。
 
     Parameters:
         clipping_segments (list): 切り抜き動画のセグメントリスト。
@@ -16,19 +17,8 @@ def compare_texts(clipping_segments, source_segments, initial_threshold=1.0, tim
     Returns:
         list: 一致したセグメントペアのリスト。
     """
-
     def calculate_similarity(text1, text2, method="sequence"):
-        """
-        テキスト間の類似度を指定の方法で計算。
-
-        Parameters:
-            text1 (str): テキスト1。
-            text2 (str): テキスト2。
-            method (str): 類似度計算方法 ("sequence", "jaccard", "cosine")。
-
-        Returns:
-            float: 類似度スコア（0～1）。
-        """
+        """テキスト間の類似度を計算"""
         if method == "sequence":
             return SequenceMatcher(None, text1, text2).ratio()
         elif method == "jaccard":
@@ -45,17 +35,7 @@ def compare_texts(clipping_segments, source_segments, initial_threshold=1.0, tim
             raise ValueError(f"Unknown method: {method}")
 
     def find_best_match(segment, source_segments, threshold=0.8):
-        """
-        切り抜きセグメントに最も類似する元動画セグメントを探す。
-
-        Parameters:
-            segment (dict): 切り抜き動画のセグメント。
-            source_segments (list): 元動画のセグメントリスト。
-            threshold (float): 類似度のしきい値。
-
-        Returns:
-            dict or None: 一致した元動画セグメント情報。またはNone。
-        """
+        """切り抜きセグメントに最も類似する元動画セグメントを探す"""
         best_match = None
         max_similarity = 0
 
@@ -67,39 +47,49 @@ def compare_texts(clipping_segments, source_segments, initial_threshold=1.0, tim
 
         return best_match
 
-    matches = []
-    # 検索範囲のインデックスを計算（整数型に変換）
-    search_range_start = max(0, int(clipping_segments["start"] * len(source_segments) / source_segments[-1]["end"]))
-    search_range_end = min(len(source_segments),
-                           int(clipping_segments["end"] * len(source_segments) / source_segments[-1]["end"]))
-
-    for clip in clipping_segments:
+    def process_clip(clip):
+        """単一のクリップを処理"""
         threshold = initial_threshold
         while threshold > 0.5:  # 最低しきい値まで試行
-            # 探索範囲を絞り込み
-            filtered_segments = source_segments[search_range_start:search_range_end]
+            # 探索範囲を秒単位で絞り込み
+            search_range_start = max(0, clip["start"] - time_margin)
+            search_range_end = min(source_segments[-1]["end"], clip["end"] + time_margin)
+
+            # 秒単位をインデックス範囲に変換
+            filtered_segments = [
+                src for src in source_segments
+                if search_range_start <= src["start"] <= search_range_end
+            ]
+
             best_match = find_best_match(clip, filtered_segments, threshold)
 
             if best_match:
-                matches.append({
+                return {
                     "clip_text": clip["text"],
                     "clip_start": clip["start"],
                     "clip_end": clip["end"],
                     "source_text": best_match["text"],
                     "source_start": best_match["start"],
                     "source_end": best_match["end"],
-                    "similarity": calculate_similarity(clip["text"], best_match["text"])
-                })
-
-                # 次の探索範囲を絞り込み
-                search_range_start = max(0, best_match["start"] - time_margin)
-                search_range_end = min(len(source_segments), best_match["end"] + time_margin)
-                break
+                    "similarity": calculate_similarity(clip["text"], best_match["text"]),
+                }
 
             # 一致が見つからなければしきい値を下げる
             threshold -= 0.1
+        return None
+
+    # 並列処理の実行
+    matches = []
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(process_clip, clip) for clip in clipping_segments]
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                matches.append(result)
 
     return matches
+
+
 
 clipping_segments = [{'text': 'ムラムラ', 'start': 0.0, 'end': 0.934, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_00.wav'},
 {'text': 'ムラムラゲームラ?', 'start': 1.978, 'end': 2.854, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_01.wav'},
@@ -205,4 +195,4 @@ source_segments = [{'text': 'ムラムラ', 'start': 0.0, 'end': 0.934, 'audio_p
                    ]
 
 
-compare_texts(clipping_segments, source_segments)
+print(compare_texts(clipping_segments, source_segments))
