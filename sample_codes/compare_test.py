@@ -4,7 +4,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from difflib import SequenceMatcher
 
 
-def compare_texts(clipping_segments, source_segments, initial_threshold=1.0, time_margin=30.0):
+def compare_segments(clipping_segments, source_segments, initial_threshold=1.0, time_margin=30.0):
     """
     切り抜き動画と元動画を一致させる（並列処理を使用）。
 
@@ -195,4 +195,4 @@ source_segments = [{'text': 'ムラムラ', 'start': 0.0, 'end': 0.934, 'audio_p
                    ]
 
 
-print(compare_texts(clipping_segments, source_segments))
+print(compare_segments(clipping_segments, source_segments))
