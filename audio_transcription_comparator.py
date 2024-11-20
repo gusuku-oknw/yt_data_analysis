@@ -233,7 +233,6 @@ def audio_transcription2csv(audio_path, output_directory):
 
     # CSVファイルが存在しない場合、新たに作成
     print(f"CSVファイルが存在しません: {output_path} を作成します...")
-    audio_path = "./data/sound/clipping_audio_wav/7-1fNxXj_xM.wav"
 
     # 音声ファイルの処理（文字起こし）
     transcriber = AudioTranscriber()
@@ -270,13 +269,16 @@ if __name__ == "__main__":
     # print(clipping_audio)
     test = "./data"
     # test
-    source_audio = "./data"
+    source_audio = "./data/sound/source_audio_wav/O5Aa-5KqFPqQD8Xd.wav"
     clipping_audio = "./data/sound/clipping_audio_wav/7-1fNxXj_xM.wav"
 
-    # # ステップ2: Distil-Whisperで文字起こし
-    # print("元配信音声を文字起こし中...")
-    # source_silences = audio_transcription2csv(source_audio)
-    # # print(f"元配信文字起こし結果: {source_silences}")
+    # ステップ2: Distil-Whisperで文字起こし
+    print("元配信音声を文字起こし中...")
+    source_silences = audio_transcription2csv(
+        source_audio,
+        output_directory="data/sound/source_audio_transcription"
+    )
+    print(f"元配信文字起こし結果: {source_silences}")
 
     # 切り抜き音声を文字起こししてCSVに保存
     print("切り抜き音声を文字起こし中...")
