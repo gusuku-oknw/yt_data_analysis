@@ -5,6 +5,11 @@ import pandas as pd
 import soundfile as sf
 from transformers import pipeline
 from datasets import load_dataset
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+from matplotlib.ticker import FuncFormatter
+from matplotlib import rcParams
+
 import numpy as np
 from openunmix import predict
 from yt_dlp import YoutubeDL
@@ -327,6 +332,88 @@ def audio_transcription2csv(audio_path, output_directory):
 
     return silences
 
+def plt_compare(matches_csv, unmatched_csv):
+    # 日本語フォントの設定
+    rcParams['font.family'] = 'Meiryo'  # 日本語フォントを指定（インストール済みである必要があります）
+
+    # 一致したセグメントの読み込み
+    matches_df = pd.read_csv(matches_csv)
+
+    # 一致しなかったセグメントの読み込み
+    if os.path.exists(unmatched_csv):
+        unmatched_df = pd.read_csv(unmatched_csv)
+    else:
+        unmatched_df = pd.DataFrame()
+
+    # 時間オフセットの計算
+    matches_df['time_offset'] = matches_df['source_start'] - matches_df['clip_start']
+    average_offset = matches_df['time_offset'].mean()
+
+    # 秒を「時:分:秒」の形式に変換する関数
+    def seconds_to_hms(seconds):
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        secs = int(seconds % 60)
+        return f"{hours:02}:{minutes:02}:{secs:02}"
+
+    # プロットを初期化
+    plt.figure(figsize=(15, 6))
+
+    # 2つのサブプロットを作成
+    ax1 = plt.subplot(2, 1, 1)  # 切り抜き音声
+    ax2 = plt.subplot(2, 1, 2)  # 元音声
+
+    # 切り抜き音声のプロット
+    for _, row in matches_df.iterrows():
+        ax1.barh(y=0, width=row['clip_end'] - row['clip_start'],
+                 left=row['clip_start'], height=0.4, align='center', color='green')
+
+    if not unmatched_df.empty:
+        for _, row in unmatched_df.iterrows():
+            ax1.barh(y=0, width=row['clip_end'] - row['clip_start'],
+                     left=row['clip_start'], height=0.4, align='center', color='red')
+
+    ax1.set_title('切り抜き音声のセグメント', fontsize=14)
+    ax1.set_xlim(0, matches_df['clip_end'].max())
+    ax1.set_yticks([])
+
+    # 時間表示を時:分:秒形式に設定
+    ax1.xaxis.set_major_formatter(FuncFormatter(lambda x, _: seconds_to_hms(x)))
+    ax1.set_xlabel('時間（時:分:秒）', fontsize=12)
+
+    # 元音声のプロット
+    for _, row in matches_df.iterrows():
+        ax2.barh(y=0, width=row['source_end'] - row['source_start'],
+                 left=row['source_start'], height=0.4, align='center', color='green')
+
+    # if not unmatched_df.empty:
+    #     for _, row in unmatched_df.iterrows():
+    #         # 推定された元音声上のセグメントの位置を計算
+    #         estimated_start = row['clip_start'] + average_offset
+    #         estimated_end = row['clip_end'] + average_offset
+    #         ax2.barh(y=0, width=estimated_end - estimated_start,
+    #                  left=estimated_start, height=0.4, align='center', color='red', alpha=0.5)
+
+    ax2.set_title('元音声のセグメント', fontsize=14)
+    ax2.set_xlim(0, matches_df['source_end'].max())
+    ax2.set_yticks([])
+
+    # 時間表示を時:分:秒形式に設定
+    ax2.xaxis.set_major_formatter(FuncFormatter(lambda x, _: seconds_to_hms(x)))
+    ax2.set_xlabel('時間（時:分:秒）', fontsize=12)
+
+    # 凡例の追加
+    legend_elements = [
+        Patch(facecolor='green', label='一致したセグメント'),
+        Patch(facecolor='red', label='一致しなかったセグメント')
+    ]
+    ax1.legend(handles=legend_elements, loc='upper right', fontsize=10)
+    ax2.legend(handles=[Patch(facecolor='green', label='一致したセグメント')], loc='upper right', fontsize=10)
+
+    # レイアウトを調整して表示
+    plt.tight_layout()
+    plt.show()
+
 
 if __name__ == "__main__":
     # 元配信URLと切り抜きURL
@@ -362,7 +449,7 @@ if __name__ == "__main__":
     print(f"切り抜き文字起こし結果: {clipping_silences}")
 
     # ステップ3: テキストの比較
-    root_directory = 'data/CSV'
+    root_directory = 'data/compare_CSV'
     print(len(source_silences), len(clipping_silences))
     matches, unmatched = compare_segments(clipping_silences, source_silences)
 
@@ -380,3 +467,5 @@ if __name__ == "__main__":
     if unmatched:
         pd.DataFrame(unmatched).to_csv(unmatched_file, index=False, encoding="utf-8-sig")
         print(f"一致しなかったセグメントを保存しました: {unmatched_file}")
+
+    plt_compare(output_file, unmatched_file)
