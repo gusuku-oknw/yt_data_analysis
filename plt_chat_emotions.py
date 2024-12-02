@@ -27,8 +27,10 @@ def visualize_combined_with_file(file_path, matches_csv, unmatched_csv):
     df = pd.read_csv(file_path)
 
     # データのグループ化（`Time_in_10s` 列を使用）
+    # 'Time_in_10s' カラムを作成
+    df['Time_in_10s'] = (df['Time_in_seconds'] // 10) * 10
     sentiment_counts = df.groupby('Time_in_10s')[['positive', 'neutral', 'negative']].sum()
-    emotion_counts = df.groupby('Time_in_10s')[['喜び', '悲しみ', '期待', '驚き', '怒り', '恐れ', '嫌悪', '信頼']].sum()
+    emotion_counts = df.groupby('Time_in_10s')[['Joy', 'Sadness', 'Anticipation', 'Surprise', 'Anger', 'Fear', 'Disgust', 'Trust']].sum()
 
     matches_df = pd.read_csv(matches_csv)
 
@@ -55,7 +57,7 @@ def visualize_combined_with_file(file_path, matches_csv, unmatched_csv):
     ax1.set_xlim(0, matches_df['clip_end'].max())
     ax1.set_yticks([])
     ax1.xaxis.set_major_formatter(FuncFormatter(lambda x, _: seconds_to_hms(x)))
-    ax1.legend(loc='upper right', fontsize=10)
+    # ax1.legend(loc='upper right', fontsize=10)
 
     # === セグメント比較（元音声） ===
     ax2 = axes[1]
@@ -80,7 +82,7 @@ def visualize_combined_with_file(file_path, matches_csv, unmatched_csv):
 
     # === 感情分析（8分類） ===
     ax4 = axes[3]
-    for column in ['喜び', '悲しみ', '期待', '驚き', '怒り', '恐れ', '嫌悪', '信頼']:
+    for column in ['Joy', 'Sadness', 'Anticipation', 'Surprise', 'Anger', 'Fear', 'Disgust', 'Trust']:
         ax4.plot(emotion_counts.index, emotion_counts[column], marker='o', linestyle='-', label=column)
 
     ax4.set_title('10秒ごとの感情別コメント数（8感情）', fontsize=14)
@@ -107,8 +109,8 @@ def visualize_combined_with_file(file_path, matches_csv, unmatched_csv):
 
 # 実行例
 if __name__ == '__main__':
-    file_path = 'path/to/emotion_analysis_results.csv'
-    matches_csv = 'path/to/matches.csv'
-    unmatched_csv = 'path/to/unmatched.csv'
+    file_path = './chat_messages_with_sentiment_and_emotion=YGGLxywB3Tw.csv'
+    matches_csv = 'data/compare_CSV/O5Aa-5KqFPqQD8Xd_7-1fNxXj_xM.csv'
+    unmatched_csv = 'data/compare_CSV/O5Aa-5KqFPqQD8Xd_7-1fNxXj_xM_unmatched.csv'
 
     visualize_combined_with_file(file_path, matches_csv, unmatched_csv)

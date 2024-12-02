@@ -169,5 +169,5 @@ plt.show()
 
 # データフレームをCSVファイルとして保存
 file_name = os.path.splitext(os.path.basename(file_path))[0]  # 拡張子を除いたファイル名を取得
-df.to_csv(f'chat_messages_with_sentiment_and_emotion={file_name}.csv', index=False, encoding='utf-8-sig')
+df.to_csv(f'./chat_messages_with_sentiment_and_emotion={file_name}.csv', index=False, encoding='utf-8-sig')
 print(f"分析結果を 'chat_messages_with_sentiment_and_emotion={file_name}.csv' に保存しました。")

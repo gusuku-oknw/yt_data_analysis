@@ -431,15 +431,12 @@ if __name__ == "__main__":
 
     # ステップ1: 音声ダウンロード
     print("元配信音声をダウンロード中...")
-    # source_audio = download_yt_sound(source_url, output_dir="data/sound/source_audio")
+    source_audio = download_yt_sound(source_url, output_dir="data/sound/source_audio")
     # print(source_audio)
     print("切り抜き音声をダウンロード中...")
-    # clipping_audio = download_yt_sound(clipping_url, output_dir="data/sound/clipping_audio")
+    clipping_audio = download_yt_sound(clipping_url, output_dir="data/sound/clipping_audio")
     # print(clipping_audio)
     test = "./data"
-    # test
-    source_audio = "./data/sound/source_audio_wav/O5Aa-5KqFPqQD8Xd.wav"
-    clipping_audio = "./data/sound/clipping_audio_wav/7-1fNxXj_xM.wav"
 
     # ステップ2: Distil-Whisperで文字起こし
     print("元配信音声を文字起こし中...")
