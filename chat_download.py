@@ -108,7 +108,7 @@ def chat_download_csv(url, directory=None):
 
 # ガター内の緑色のボタンを押すとスクリプトを実行します。
 if __name__ == '__main__':
-    url = "https://www.youtube.com/watch?v=HaHgd60bWvQ&t=0s"
+    url = "https://www.youtube.com/live/YGGLxywB3Tw?si=O5Aa-5KqFPqQD8Xd"
     chat_download_csv(url)
 
 # PyCharm のヘルプは https://www.jetbrains.com/help/pycharm/ を参照してください

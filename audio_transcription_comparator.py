@@ -27,7 +27,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 from difflib import SequenceMatcher
 
 from audio_transcriber import AudioTranscriber
-from sample_codes.spleeter_test import root_directory
 
 
 # 音声ファイルを文字起こし
@@ -109,60 +108,61 @@ def fast_whisper_transcription(audio_file, model_size="base", device="cuda", com
     return transcription
 
 # テキストの類似度を計算
-def compare_segments(clipping_segments, source_segments, initial_threshold=1.0, time_margin=30.0):
-    """
-    切り抜き動画と元動画を一致させる（並列処理を使用）。
-    結果をCSVファイルに保存。
+def compare_segments(clipping_segments, source_segments, initial_threshold=0.8):
+    import re
+    from difflib import SequenceMatcher
 
-    Parameters:
-        clipping_segments (list): 切り抜き動画のセグメントリスト。
-        source_segments (list): 元動画のセグメントリスト。
-        initial_threshold (float): 初期の類似度しきい値。
-        time_margin (float): 探索範囲の時間（秒）。
+    def preprocess_text(text):
+        """テキストの前処理（スペース削除、記号削除など）"""
+        text = re.sub(r'\s+', '', text)
+        text = re.sub(r'[^\w\s]', '', text)
+        return text
 
-    Returns:
-        list: 一致したセグメントペアのリスト。
-    """
-    def calculate_similarity(text1, text2, method="sequence"):
+    def calculate_similarity(text1, text2):
         """テキスト間の類似度を計算"""
-        try:
-            if method == "sequence":
-                return SequenceMatcher(None, text1, text2).ratio()
-            elif method == "jaccard":
-                set1 = set(text1.split())
-                set2 = set(text2.split())
-                intersection = len(set1 & set2)
-                union = len(set1 | set2)
-                return intersection / union if union != 0 else 0
-            elif method == "cosine":
-                vectorizer = CountVectorizer().fit_transform([text1, text2])
-                vectors = vectorizer.toarray()
-                return cosine_similarity(vectors)[0, 1]
-        except Exception as e:
-            print(f"Error in calculate_similarity: {e}")
-            return 0
+        text1 = preprocess_text(text1)
+        text2 = preprocess_text(text2)
+        return SequenceMatcher(None, text1, text2).ratio()
 
-    def find_best_match(segment, source_segments, threshold=0.8):
+    def find_best_match(segment, source_segments, used_segments, threshold=0.8):
         """切り抜きセグメントに最も類似する元動画セグメントを探す"""
         best_match = None
         max_similarity = 0
+
         for src in source_segments:
+            # 使用済みセグメントはスキップ
+            if src["start"] in used_segments:
+                continue
+
             similarity = calculate_similarity(segment["text"], src["text"])
             if similarity > max_similarity and similarity >= threshold:
                 best_match = src
                 max_similarity = similarity
+
         return best_match
 
-    def process_clip(clip):
-        nonlocal unmatched
+    # ユニークな元セグメントを抽出
+    unique_source_segments = []
+    seen_texts = set()
+
+    for src in source_segments:
+        text = preprocess_text(src["text"])
+        if text not in seen_texts:
+            unique_source_segments.append(src)
+            seen_texts.add(text)
+
+    # 処理
+    matches = []
+    unmatched = []
+    used_segments = set()
+
+    for clip in clipping_segments:
         try:
             threshold = initial_threshold
             while threshold > 0.5:
-                # Remove time-based filtering
-                filtered_segments = source_segments
-                best_match = find_best_match(clip, filtered_segments, threshold)
+                best_match = find_best_match(clip, unique_source_segments, used_segments, threshold)
                 if best_match:
-                    return {
+                    matches.append({
                         "clip_text": clip["text"],
                         "clip_start": clip["start"],
                         "clip_end": clip["end"],
@@ -170,25 +170,34 @@ def compare_segments(clipping_segments, source_segments, initial_threshold=1.0, 
                         "source_start": best_match["start"],
                         "source_end": best_match["end"],
                         "similarity": calculate_similarity(clip["text"], best_match["text"]),
-                    }
+                    })
+                    used_segments.add(best_match["start"])  # 使用済みの元セグメントを追跡
+                    break
                 threshold -= 0.1
-            unmatched.append({"clip_text": clip["text"], "clip_start": clip["start"], "clip_end": clip["end"]})
+
+            if threshold <= 0.5:
+                unmatched.append({
+                    "clip_text": clip["text"],
+                    "clip_start": clip["start"],
+                    "clip_end": clip["end"]
+                })
+
         except Exception as e:
             print(f"Error processing clip '{clip['text']}': {e}")
 
-    # 並列処理の実行
-    matches = []
-    unmatched = []  # 一致しなかったセグメントを記録するリスト
+    # CSVに保存
+    matches_df = pd.DataFrame(matches)
+    unmatched_df = pd.DataFrame(unmatched)
 
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(process_clip, clip) for clip in clipping_segments]
-        for future in as_completed(futures):
-            try:
-                result = future.result()
-                if result:
-                    matches.append(result)
-            except Exception as e:
-                print(f"Error in thread: {e}")
+    if not matches_df.empty:
+        matches_df.to_csv('matches.csv', index=False)
+    else:
+        print("No matches to save.")
+
+    if not unmatched_df.empty:
+        unmatched_df.to_csv('unmatched.csv', index=False)
+    else:
+        print("No unmatched segments to save.")
 
     return matches, unmatched
 

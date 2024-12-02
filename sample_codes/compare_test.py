@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 def compare_segments(clipping_segments, source_segments, initial_threshold=1.0, time_margin=30.0):
     """
     切り抜き動画と元動画を一致させる（並列処理を使用）。
+    マッチしないクリップも結果に含める。
 
     Parameters:
         clipping_segments (list): 切り抜き動画のセグメントリスト。
@@ -15,7 +16,102 @@ def compare_segments(clipping_segments, source_segments, initial_threshold=1.0, 
         time_margin (float): 探索範囲の時間（秒）。
 
     Returns:
-        list: 一致したセグメントペアのリスト。
+        list: 一致したセグメントペア、もしくはマッチしなかったセグメントのリスト。
+    """
+    def calculate_similarity(text1, text2, method="sequence"):
+        """テキスト間の類似度を計算"""
+        if method == "sequence":
+            return SequenceMatcher(None, text1, text2).ratio()
+        elif method == "jaccard":
+            set1 = set(text1.split())
+            set2 = set(text2.split())
+            intersection = len(set1 & set2)
+            union = len(set1 | set2)
+            return intersection / union if union != 0 else 0
+        elif method == "cosine":
+            vectorizer = CountVectorizer().fit_transform([text1, text2])
+            vectors = vectorizer.toarray()
+            return cosine_similarity(vectors)[0, 1]
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+    def find_best_match(segment, source_segments, threshold=0.8):
+        """切り抜きセグメントに最も類似する元動画セグメントを探す"""
+        best_match = None
+        max_similarity = 0
+
+        for src in source_segments:
+            similarity = calculate_similarity(segment["text"], src["text"])
+            if similarity > max_similarity and similarity >= threshold:
+                best_match = src
+                max_similarity = similarity
+
+        return best_match, max_similarity
+
+    def process_clip(clip):
+        """単一のクリップを処理"""
+        threshold = initial_threshold
+        while threshold > 0.5:  # 最低しきい値まで試行
+            # 探索範囲を秒単位で絞り込み
+            search_range_start = max(0, clip["start"] - time_margin)
+            search_range_end = min(source_segments[-1]["end"], clip["end"] + time_margin)
+
+            # 秒単位をインデックス範囲に変換
+            filtered_segments = [
+                src for src in source_segments
+                if search_range_start <= src["start"] <= search_range_end
+            ]
+
+            best_match, max_similarity = find_best_match(clip, filtered_segments, threshold)
+
+            if best_match:
+                return {
+                    "clip_text": clip["text"],
+                    "clip_start": clip["start"],
+                    "clip_end": clip["end"],
+                    "source_text": best_match["text"],
+                    "source_start": best_match["start"],
+                    "source_end": best_match["end"],
+                    "similarity": max_similarity,
+                }
+
+            # 一致が見つからなければしきい値を下げる
+            threshold -= 0.1
+
+        # マッチしなかった場合
+        return {
+            "clip_text": clip["text"],
+            "clip_start": clip["start"],
+            "clip_end": clip["end"],
+            "source_text": None,
+            "source_start": None,
+            "source_end": None,
+            "similarity": 0,
+        }
+
+    # 並列処理の実行
+    results = []
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(process_clip, clip) for clip in clipping_segments]
+        for future in as_completed(futures):
+            result = future.result()
+            results.append(result)
+
+    return results
+
+
+def compare_segments_unmatched(clipping_segments, source_segments, initial_threshold=1.0, time_margin=30.0):
+    """
+    切り抜き動画と元動画を比較し、マッチしていないセグメントを返す。
+
+    Parameters:
+        clipping_segments (list): 切り抜き動画のセグメントリスト。
+        source_segments (list): 元動画のセグメントリスト。
+        initial_threshold (float): 初期の類似度しきい値。
+        time_margin (float): 探索範囲の時間（秒）。
+
+    Returns:
+        list: マッチしなかったセグメントのリスト。
     """
     def calculate_similarity(text1, text2, method="sequence"):
         """テキスト間の類似度を計算"""
@@ -64,34 +160,44 @@ def compare_segments(clipping_segments, source_segments, initial_threshold=1.0, 
             best_match = find_best_match(clip, filtered_segments, threshold)
 
             if best_match:
-                return {
-                    "clip_text": clip["text"],
-                    "clip_start": clip["start"],
-                    "clip_end": clip["end"],
-                    "source_text": best_match["text"],
-                    "source_start": best_match["start"],
-                    "source_end": best_match["end"],
-                    "similarity": calculate_similarity(clip["text"], best_match["text"]),
-                }
+                return None  # マッチが見つかればスキップ
 
             # 一致が見つからなければしきい値を下げる
             threshold -= 0.1
-        return None
+        return clip  # 一致しなかったセグメントを返す
 
     # 並列処理の実行
-    matches = []
+    unmatched_segments = []
     with ThreadPoolExecutor() as executor:
         futures = [executor.submit(process_clip, clip) for clip in clipping_segments]
         for future in as_completed(futures):
             result = future.result()
             if result is not None:
-                matches.append(result)
+                unmatched_segments.append(result)
 
-    return matches
-
+    return unmatched_segments
 
 
 clipping_segments = [{'text': 'ムラムラ', 'start': 0.0, 'end': 0.934, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_00.wav'},
+{'text': 'ムラムラゲームラ?', 'start': 1.978, 'end': 2.854, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_01.wav'},
+{'text': 'ゲージを取得する', 'start': 2.714, 'end': 4.134, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_02.wav'},
+{'text': '相手に近い時避難時にゲージが少しずつたまるダメージ受けるとムラつくんだね確かにマリンドエムだからね', 'start': 4.186, 'end': 11.526, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_03.wav'},
+{'text': 'ブラムラしちゃおっかな', 'start': 12.058, 'end': 14.118, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_04.wav'},
+{'text': 'ムラムラゲージどこにある?', 'start': 14.97, 'end': 17.029999999999998, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_05.wav'},
+{'text': '左下にあるわえやばいちょっとずつムラムラしてきた', 'start': 17.466, 'end': 21.19, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_06.wav'},
+{'text': 'ちょっとずつ', 'start': 21.466, 'end': 22.982, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_07.wav'},
+{'text': 'これあれじゃん敵の中に', 'start': 24.89, 'end': 27.206, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_08.wav'},
+{'text': 'こんなに楽しいこといっぱいさせてもらってさ今年が絶対全盛期', 'start': 234.266, 'end': 239.654, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_74.wav'},
+{'text': 'だよねって', 'start': 239.802, 'end': 241.254, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_75.wav'},
+{'text': 'でも次の年は次の年でなんか新しいこと起こったりしてさ', 'start': 241.178, 'end': 245.382, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_76.wav'},
+{'text': '毎回それは思ってる', 'start': 245.626, 'end': 248.166, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_77.wav'},
+{'text': 'だから毎年悔いのないように', 'start': 248.602, 'end': 251.366, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_78.wav'},
+{'text': '活動頑張ろうって思ってんだけど', 'start': 251.29, 'end': 254.31, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_79.wav'},
+{'text': 'よいしょ', 'start': 257.01800000000003, 'end': 258.63, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_80.wav'},
+{'text': 'やめて', 'start': 258.714, 'end': 259.782, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_81.wav'}
+                   ]
+
+source_segments = [{'text': 'ムラムラ', 'start': 0.0, 'end': 0.934, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_00.wav'},
 {'text': 'ムラムラゲームラ?', 'start': 1.978, 'end': 2.854, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_01.wav'},
 {'text': 'ゲージを取得する', 'start': 2.714, 'end': 4.134, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_02.wav'},
 {'text': '相手に近い時避難時にゲージが少しずつたまるダメージ受けるとムラつくんだね確かにマリンドエムだからね', 'start': 4.186, 'end': 11.526, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_03.wav'},
@@ -175,24 +281,13 @@ clipping_segments = [{'text': 'ムラムラ', 'start': 0.0, 'end': 0.934, 'audio
 {'text': 'やめて', 'start': 258.714, 'end': 259.782, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_81.wav'}
 ]
 
-source_segments = [{'text': 'ムラムラ', 'start': 0.0, 'end': 0.934, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_00.wav'},
-{'text': 'ムラムラゲームラ?', 'start': 1.978, 'end': 2.854, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_01.wav'},
-{'text': 'ゲージを取得する', 'start': 2.714, 'end': 4.134, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_02.wav'},
-{'text': '相手に近い時避難時にゲージが少しずつたまるダメージ受けるとムラつくんだね確かにマリンドエムだからね', 'start': 4.186, 'end': 11.526, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_03.wav'},
-{'text': 'ブラムラしちゃおっかな', 'start': 12.058, 'end': 14.118, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_04.wav'},
-{'text': 'ムラムラゲージどこにある?', 'start': 14.97, 'end': 17.029999999999998, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_05.wav'},
-{'text': '左下にあるわえやばいちょっとずつムラムラしてきた', 'start': 17.466, 'end': 21.19, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_06.wav'},
-{'text': 'ちょっとずつ', 'start': 21.466, 'end': 22.982, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_07.wav'},
-{'text': 'これあれじゃん敵の中に', 'start': 24.89, 'end': 27.206, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_08.wav'},
-{'text': 'こんなに楽しいこといっぱいさせてもらってさ今年が絶対全盛期', 'start': 234.266, 'end': 239.654, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_74.wav'},
-{'text': 'だよねって', 'start': 239.802, 'end': 241.254, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_75.wav'},
-{'text': 'でも次の年は次の年でなんか新しいこと起こったりしてさ', 'start': 241.178, 'end': 245.382, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_76.wav'},
-{'text': '毎回それは思ってる', 'start': 245.626, 'end': 248.166, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_77.wav'},
-{'text': 'だから毎年悔いのないように', 'start': 248.602, 'end': 251.366, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_78.wav'},
-{'text': '活動頑張ろうって思ってんだけど', 'start': 251.29, 'end': 254.31, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_79.wav'},
-{'text': 'よいしょ', 'start': 257.01800000000003, 'end': 258.63, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_80.wav'},
-{'text': 'やめて', 'start': 258.714, 'end': 259.782, 'audio_path': 'C:\\Users\\tmkjn\\Documents\\python\\data_analysis\\data_analysis\\content\\audio_segments_1732030601\\segment_81.wav'}
-                   ]
-
-
-print(compare_segments(clipping_segments, source_segments))
+#
+# results = (compare_segments(clipping_segments, source_segments))
+# # 結果を表示
+# for result in results:
+#     print(result)
+#
+# 実行例
+unmatched_segments = compare_segments_unmatched(clipping_segments, source_segments)
+for segment in unmatched_segments:
+    print(f"Unmatched Text: {segment['text']}, Start: {segment['start']}, End: {segment['end']}")
