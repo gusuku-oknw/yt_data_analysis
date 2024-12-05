@@ -1,11 +1,12 @@
 import time
-
 import pandas as pd
 import chat_download
 import re
 import os
 from tqdm import tqdm
 
+
+# URLアンサンブル
 def split_urls(row):
     """
     行に含まれる複数のURLを分割してリストとして返す。
@@ -15,7 +16,7 @@ def split_urls(row):
     )
     return url_pattern.findall(row)
 
-
+# ディレクトリ作成
 def create_directory(base_directory, csv_filename):
     """
     CSVファイル名を基に保存先ディレクトリを作成。
@@ -27,15 +28,14 @@ def create_directory(base_directory, csv_filename):
     Returns:
         str: 作成したディレクトリのパス。
     """
-    # 拡張子を除いたファイル名をディレクトリ名として使用
     directory_name = os.path.splitext(os.path.basename(csv_filename))[0]
     target_directory = os.path.join(base_directory, directory_name)
 
-    # ディレクトリを作成（存在しない場合のみ）
     os.makedirs(target_directory, exist_ok=True)
     return target_directory
 
 
+# URLフィルタリング
 def filter_and_correct_urls(url_list):
     """
     URLリストをフィルタリングし、不完全なURLを補正して有効なYouTubeおよびTwitch URLのみを返す。
@@ -47,6 +47,7 @@ def filter_and_correct_urls(url_list):
     twitch_url_pattern = re.compile(
         r'(https://)?(www\.)?twitch\.tv/videos/\d+'
     )
+    channel_pattern = re.compile(r'@(?!watch|live|embed)[a-zA-Z0-9_-]+')  # ＠から始まるチャンネルURLを検出
 
     for url in url_list:
         # 不完全なプロトコルを修正
@@ -59,8 +60,8 @@ def filter_and_correct_urls(url_list):
         if "&t=" in url:
             url = url.split("&t=")[0]  # タイムスタンプパラメータ以前の部分を取得
 
-        # `/channel/` が含まれる場合はスキップ
-        if "/channel/" in url:
+        # `/channel/` または `＠` が含まれるチャンネルURLをスキップ
+        if "/channel/" in url or channel_pattern.search(url):
             continue
 
         # YouTubeまたはTwitchのURLとして有効かチェック
@@ -69,83 +70,130 @@ def filter_and_correct_urls(url_list):
 
     return valid_urls
 
-
-def list_original_urls(csv_file, base_directory="data/chat_messages", url_column="Original URL"):
+# csvファイルtoチャットダウンロード
+def list_original_urls(csv_file, base_directory="data/chat_messages", url_column="Original URL", video_url_column="Video URL", delete_multiple=False):
     """
     指定されたCSVファイルのオリジナルURLカラムからURLを取得し、チャットをダウンロードする。
 
     Parameters:
         csv_file (str): CSVファイルのパス。
         base_directory (str): チャットメッセージの保存先の基本ディレクトリ。
-        url_column (str): URLが記載されているカラム名（デフォルトは "Original videoURL"）。
+        url_column (str): URLが記載されているカラム名。
+        video_url_column (str): Video URLが記載されているカラム名。
+        delete_multiple (bool): URLカラムに複数のURLがある場合、行を削除するかどうか。
+
+    Returns:
+        pd.DataFrame: Video URL、Original URL、保存ファイルパスの対応表。
     """
-    urls = []
     try:
-        # CSVファイルを読み込む
-        df = pd.read_csv(csv_file, encoding="utf-8-sig")  # 2行目以降を読み込む
+        df = pd.read_csv(csv_file, encoding="utf-8-sig")
 
-        # 指定されたカラムが存在するか確認
-        if url_column not in df.columns:
-            print(f"指定されたカラム '{url_column}' がCSVファイルに存在しません。")
-            return
+        if url_column not in df.columns or video_url_column not in df.columns:
+            print(f"指定されたカラム '{url_column}' または '{video_url_column}' がCSVファイルに存在しません。")
+            return pd.DataFrame()
 
-        # URLのリストを取得
-        urls = df[url_column].dropna().unique()  # 重複と欠損値を排除
+        # Video URLとOriginal URLの対応を保持するリストを作成
+        urls = df[[video_url_column, url_column]].dropna()
 
     except FileNotFoundError:
         print(f"CSVファイル '{csv_file}' が見つかりません。")
-        return
+        return pd.DataFrame()
     except Exception as e:
         print(f"エラーが発生しました: {str(e)}")
-        return
+        return pd.DataFrame()
+
+    target_directory = create_directory(base_directory, os.path.splitext(os.path.basename(csv_file))[0])
 
     all_url = []
-    # URLを表示
-    print("オリジナルURLのリスト:")
-    for url in urls:
-        # 分割されたURLを収集
-        split_url_list = split_urls(url)
-        all_url.extend(split_url_list)
+    for _, row in urls.iterrows():
+        video_url = row[video_url_column]
+        original_url = row[url_column]
+        split_url_list = split_urls(original_url)
 
-    # フィルタリングと補正されたURLを処理
-    valid_urls = filter_and_correct_urls(all_url)
+        if delete_multiple and len(split_url_list) > 1:
+            continue  # 複数URLを含む行を削除
 
-    # 保存先ディレクトリを作成
-    target_directory = create_directory(base_directory, csv_file.split('_', 1)[0])
+        for split_url in split_url_list:
+            all_url.append({
+                "Video URL": video_url,
+                "Original URL": split_url
+            })
 
-    valid_urls = list(set(valid_urls))  # 重複を除去してリストに変換
-    print(len(valid_urls), "個の有効なURLが見つかりました。")
+    # フィルタリングとURLの修正
+    filtered_all_url = []
+    for item in all_url:
+        corrected_urls = filter_and_correct_urls([item["Original URL"]])
+        for corrected_url in corrected_urls:
+            filtered_all_url.append({
+                "Video URL": item["Video URL"],
+                "Original URL": corrected_url
+            })
 
-    for valid_url in valid_urls:
-        time.sleep(2)  # 10秒待機
+    # 重複を除去
+    unique_urls = []
+    seen = set()
+    for item in filtered_all_url:
+        key = (item["Video URL"], item["Original URL"])
+        if key not in seen:
+            seen.add(key)
+            unique_urls.append(item)
 
-        # 動画IDを取得してファイル名を生成
-        video_id = chat_download.get_video_id_from_url(chat_download.remove_query_params(valid_url))
-        file_name = f"{video_id}.csv"  # 保存するファイル名
-        file_path = os.path.join(target_directory, file_name)
+    print(len(unique_urls), "個の有効なURLが見つかりました。")
 
-        # ファイルが既に存在する場合はスキップ
-        if os.path.exists(file_path):
-            print(f"\rファイルが既に存在します。スキップします: {file_path}")
-            continue
+    download_records = []  # ダウンロード結果を保存するリスト
 
-        # チャット取得処理を実行
+    for item in tqdm(unique_urls, desc="チャットダウンロード処理"):
+        video_url = item["Video URL"]
+        original_url = item["Original URL"]
+
         try:
-            print(f"\r処理中のURL: {valid_url}")
-            chat_download.chat_download_csv(valid_url, target_directory)
-            print(f"\rチャットデータを保存しました: {valid_url}")
+            video_id = chat_download.get_video_id_from_url(chat_download.remove_query_params(original_url))
+            file_name = f"{video_id}.csv"
+            file_path = os.path.join(target_directory, file_name)
+
+            if os.path.exists(file_path):
+                print(f"\rファイルが既に存在します。スキップします: {file_path}")
+                download_records.append({
+                    "Video URL": video_url,
+                    "Original URL": original_url,
+                    "File Path": os.path.abspath(file_path)
+                })
+                continue
+
+            print(f"\r処理中のURL: {original_url}")
+            chat_download.chat_download_csv(original_url, target_directory)
+            print(f"\rチャットデータを保存しました: {original_url}")
+            download_records.append({
+                "Video URL": video_url,
+                "Original URL": original_url,
+                "File Path": os.path.abspath(file_path)
+            })
+
         except Exception as e:
             if "Private video" in str(e):
-                print(f"プライベート動画のためスキップします: {valid_url}")
+                print(f"プライベート動画のためスキップします: {original_url}")
             else:
-                print(f"\rエラーが発生しました: {e} - URL: {valid_url}")
+                print(f"\rエラーが発生しました: {e} - URL: {original_url}")
 
-    # 最後のメッセージを改行して整える
     print("\nすべての処理が完了しました")
+
+    # ダウンロード結果をDataFrameに変換して返す
+    result_df = pd.DataFrame(download_records)
+    return result_df
 
 
 # 実行例
 if __name__ == "__main__":
-    csv_file = "./data/ホロライブ　切り抜き_2024-11-16_18-26-28_videos_processed.csv"  # 先程のCSVファイルのパス
-    print(csv_file.split('_', 1)[0])
-    list_original_urls(csv_file)
+    import pandas as pd
+
+    # CSVファイルのパスを指定
+    csv_file = "./data/test_processed.csv"
+
+    # 処理の実行と結果の保存
+    result_df = list_original_urls(csv_file, delete_multiple=True)
+
+    # 結果をCSVに保存
+    output_csv = "./data/download_results.csv"
+    result_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
+
+    print(f"ダウンロード結果を {output_csv} に保存しました。")

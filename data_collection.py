@@ -18,35 +18,48 @@ client = OpenAI(
     api_key=OpenAIKey,
 )
 
-# テキストを入力として、OpenAIのGPT-4を使用してテキストを生成する関数
-def prompt_clip_api_call(text):
-    if not text.strip():
-        return ""
-    elif text == ",":
-        return ""
+# GPT-4を使用して、切り抜き動画の概要欄から元動画URLを抽出する関数
+def extract_source_video_urls_from_description(text):
+    """
+    切り抜き動画の概要欄テキストから元動画URLを抽出する。
 
+    Parameters:
+        text (str): 切り抜き動画の概要欄テキスト。
+
+    Returns:
+        str: 抽出されたURLのリスト（改行区切り）または "None"（URLが見つからない場合）。
+    """
+    if not text.strip():
+        return "None"  # 空白のみの場合
+
+    if text == ",":
+        return "None"  # 特定の無効値の場合
+
+    # GPT-4 APIへのプロンプト構築
     message = [
-        {"role": "user", "content": "今から入力されるテキストは切り抜き動画の概要欄です。 \
-        このテキストの中で元動画を指しているURLを教えて下さい。このときの返答としてはURLのみを出力してください。複数の場合は改行して出力してください \
-        URLがない場合はNoneと返してください \
-        URLが不完全である場合は修正してください。"},
+        {"role": "user", "content": (
+            "今から入力されるテキストは切り抜き動画の概要欄です。 "
+            "このテキストの中で元動画を指しているURLを教えて下さい。このときの返答としてはURLのみを出力してください。"
+            "複数の場合は改行して出力してください。URLがない場合はNoneと返してください。"
+            "URLが不完全である場合は修正してください。"
+        )},
         {"role": "user", "content": text}
     ]
+
     try:
+        # OpenAI API呼び出し
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=message,
             temperature=0.2,
-            # max_tokens=50
         )
-
-        translated_text = response.choices[0].message.content.strip()
+        extracted_urls = response.choices[0].message.content.strip()
     except Exception as e:
         print("エラーが発生しました:", str(e))
-        translated_text = "エラーが発生しました。"
+        extracted_urls = "エラーが発生しました。"
 
-    print(translated_text)
-    return translated_text
+    print(extracted_urls)  # デバッグ用出力
+    return extracted_urls
 
 
 def convert_duration(iso_duration):
@@ -235,19 +248,15 @@ def get_popular_videos_from_channel(channel_id, max_results=5):
     return videos[:max_results]
 
 
-def save2csv(data, filename, fieldnames):
+def search_main(search_keyword):
     """
-    データを指定されたフィールド名でCSVファイルに保存する関数。
+    YouTube 検索結果を DataFrame で返す関数。
+
+    Parameters:
+        search_keyword (str): 検索キーワード。
+    Returns:
+        pd.DataFrame: YouTube 検索結果の DataFrame。
     """
-    with open(filename, mode="w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(data)
-
-
-def search_main():
-    # 検索キーワードを指定
-    search_keyword = "博衣こより　切り抜き"
     # 動画を検索
     videos = search_videos(search_keyword, max_results=100)
     formatted_videos = []
@@ -265,65 +274,57 @@ def search_main():
             "Channel Description": video.get("channel_description", "")
         })
 
-    fieldnames = [
-        "Video Title",
-        "Video URL",
-        "Thumbnail URL",
-        "Video Description",
-        "Video Duration",
-        "Video Views",
-        "Channel Title",
-        "Channel URL",
-        "Subscriber Count",
-        "Channel Description"
-    ]
-    # CSVファイルに保存
-    # 現在時刻を取得し、フォーマットする
-    current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    csv_filename = f"{search_keyword}_{current_time}_videos.csv"
-    save2csv(formatted_videos, csv_filename, fieldnames)  # 修正点：formatted_videosを渡す
+    # DataFrame を作成して返す
+    df = pd.DataFrame(formatted_videos)
 
-    print(f"検索結果データが {csv_filename} に保存されました。")
+    print("検索結果が DataFrame で返されました。")
+    return df
 
 
-# チャンネルの人気動画を取得
-def get_channel_csv():
+def add_original_video_urls(df):
     """
-    channel_list.csv を読み込んで Video Description 部分を取得し、
-    prompt_clip_api_call を使って処理を実行し、結果を新しいカラム 'Original videoURL' として追加。
-    """
-    file_name = "data/ホロライブ　切り抜き_2024-11-16_18-26-28_videos.csv"
+    'Video Description' カラムを処理して新しいカラム 'Original videoURL' を追加する。
 
+    Parameters:
+        df (pd.DataFrame): 入力 DataFrame（Video Description カラムを含む必要があります）。
+
+    Returns:
+        pd.DataFrame: 'Original videoURL' カラムが追加された DataFrame。
+    """
     try:
-        # CSVファイルを読み込む
-        df = pd.read_csv(file_name, encoding="utf-8-sig")
-
-        # 'Video Description'カラムが存在するか確認
+        # 'Video Description' カラムが存在するか確認
         if "Video Description" not in df.columns:
-            print("CSVファイルに 'Video Description' カラムが見つかりませんでした。")
-            return
+            raise KeyError("'Video Description' カラムが DataFrame に存在しません。")
 
         # 'Video Description' カラムの欠損値を空文字列に置き換え
         df["Video Description"] = df["Video Description"].fillna("").astype(str)
 
-        # 'Video Description'カラムに基づいて新しいカラム 'Original videoURL' を作成
-        df['Original URL'] = df['Video Description'].apply(prompt_clip_api_call)
+        # 'Video Description' カラムに基づいて新しいカラム 'Original videoURL' を作成
+        df['Original videoURL'] = df['Video Description'].apply(extract_source_video_urls_from_description)
 
-        # 処理結果を新しいCSVに保存
-        output_file_name = file_name.replace(".csv", "_processed.csv")
-        df.to_csv(output_file_name, index=False, encoding="utf-8-sig")
+        print("処理が完了しました。DataFrame に 'Original videoURL' カラムを追加しました。")
+        return df
 
-        print(f"処理が完了しました。結果は {output_file_name} に保存されています。")
-
-    except FileNotFoundError:
-        print(f"{file_name} が見つかりませんでした。")
+    except KeyError as e:
+        print("エラー:", str(e))
     except Exception as e:
-        print("エラーが発生しました:", str(e))
+        print("予期しないエラーが発生しました:", str(e))
+
+    return None
 
 
-def get_popular_main():
+
+def get_popular_main(channel_id):
+    """
+    チャンネルの人気動画データを取得し、CSV に保存する。
+
+    Parameters:
+        channel_id (str): チャンネルのID。
+
+    Returns:
+        str: 保存されたCSVファイルのパス。
+    """
     # チャンネルの人気動画を取得
-    channel_id = "UCs6nmQViDpUw0nuIx9c_WvA"  # ProgrammingKnowledgeのチャンネルID
     popular_videos = get_popular_videos_from_channel(channel_id, max_results=5)
 
     if popular_videos:
@@ -335,18 +336,20 @@ def get_popular_main():
         sanitized_channel_name = re.sub(r'[\\/*?:"<>|]', "", channel_name)  # ファイル名に使用できない文字を除去
         csv_filename_popular = f"{channel_id}_{sanitized_channel_name}.csv"
 
-        # 人気動画をCSVに保存
-        popular_fieldnames = [
-            "Video Title", "Video URL", "Video Description", "Video Duration",
-            "Video Views", "Likes", "Comments", "Thumbnail URL"
-        ]
-        save2csv(popular_videos, csv_filename_popular, popular_fieldnames)
+        # 人気動画データをDataFrameに変換
+        df = pd.DataFrame(popular_videos)
+
+        # CSVに保存
+        df.to_csv(csv_filename_popular, index=False, encoding="utf-8-sig")
         print(f"人気動画データが {csv_filename_popular} に保存されました。")
+
+        return csv_filename_popular
     else:
         print("人気動画の取得に失敗しました。")
+        return None
 
 if __name__ == "__main__":
-    # search_main()
-    get_channel_csv()
+    search_main(search_keyword = "博衣こより　切り抜き")
+    # get_channel_csv(file_name = "data/ホロライブ　切り抜き_2024-11-16_18-26-28_videos.csv")
 
-    # get_popular_main()
+    # get_popular_main(channel_id = "UCs6nmQViDpUw0nuIx9c_WvA")

@@ -7,7 +7,7 @@ from datasets import Dataset
 from evaluate import load
 
 # データ読み込み
-df_wrime = pd.read_table('wrime-ver1.tsv')
+df_wrime = pd.read_table('../wrime-ver1.tsv')
 
 # モデル設定
 checkpoint = 'cl-tohoku/bert-base-japanese-whole-word-masking'
@@ -63,7 +63,7 @@ def compute_metrics(eval_pred):
 
 # 訓練設定
 training_args = TrainingArguments(
-    output_dir="test_trainer",
+    output_dir="../test_trainer",
     per_device_train_batch_size=8,
     num_train_epochs=1.0,
     evaluation_strategy="steps",
