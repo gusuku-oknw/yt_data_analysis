@@ -13,11 +13,18 @@ from mlask import MLAsk
 # 日本語フォントの設定
 matplotlib.rcParams['font.family'] = 'Meiryo'
 
-# ファイルパスの設定
-file_path = 'data/chat_messages/ホロライブ　切り抜き/YGGLxywB3Tw.csv'  # 解析したいCSVファイルのパスを指定してください
 
-# データの読み込みと前処理
+# データの前処理関数
 def preprocess(df):
+    """
+    データフレームを前処理する。
+
+    Parameters:
+        df (pd.DataFrame): 読み込んだデータフレーム。
+
+    Returns:
+        pd.DataFrame: 前処理済みデータフレーム。
+    """
     # 時間が-1以上のデータのみを使用
     df = df[df['Time_in_seconds'] >= 0].copy()
 
@@ -34,10 +41,7 @@ def preprocess(df):
     return df
 
 
-df = pd.read_csv(file_path)
-df = preprocess(df)
-
-# デバイスの設定
+# 感情分析の準備
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"使用デバイス: {device}")
 
@@ -46,15 +50,13 @@ checkpoint_sentiment = 'christian-phu/bert-finetuned-japanese-sentiment'
 tokenizer_sentiment = AutoTokenizer.from_pretrained(checkpoint_sentiment)
 model_sentiment = AutoModelForSequenceClassification.from_pretrained(checkpoint_sentiment).to(device)
 
-checkpoint_emotion = './saved_model'
-tokenizer_emotion = AutoTokenizer.from_pretrained(checkpoint_emotion)
-model_emotion = AutoModelForSequenceClassification.from_pretrained(checkpoint_emotion).to(device)
+checkpoint_weime = './saved_model'
+tokenizer_weime = AutoTokenizer.from_pretrained(checkpoint_weime)
+model_weime = AutoModelForSequenceClassification.from_pretrained(checkpoint_weime).to(device)
 
 # 感情名
 sentiment_names = ['positive', 'neutral', 'negative']
-sentiment_names_jp = ['ポジティブ', 'ニュートラル', 'ネガティブ']
 emotion_names = ['Joy', 'Sadness', 'Anticipation', 'Surprise', 'Anger', 'Fear', 'Disgust', 'Trust']
-emotion_names_jp = ['喜び', '悲しみ', '期待', '驚き', '怒り', '恐れ', '嫌悪', '信頼']
 
 
 # 感情分析関数
@@ -63,7 +65,8 @@ def sentiment_pipeline(messages):
     results = []
 
     for message in messages:
-        tokens = tokenizer_sentiment(message, truncation=True, max_length=124, return_tensors="pt", padding=True).to(device)
+        tokens = tokenizer_sentiment(message, truncation=True, max_length=124, return_tensors="pt", padding=True).to(
+            device)
         with torch.no_grad():
             logits = model_sentiment(**tokens).logits
 
@@ -72,20 +75,19 @@ def sentiment_pipeline(messages):
     return results
 
 
-def emotion_pipeline(messages):
-    model_emotion.eval()
+def weime_pipeline(messages):
+    model_weime.eval()
     results = []
 
     for message in messages:
-        tokens = tokenizer_emotion(message, truncation=True, return_tensors="pt").to(device)
+        tokens = tokenizer_weime(message, truncation=True, return_tensors="pt").to(device)
         with torch.no_grad():
-            logits = model_emotion(**tokens).logits
-        probs = np.exp(logits.cpu().numpy()) / np.exp(logits.cpu().numpy()).sum(axis=-1, keepdims=True)
+            logits = model_weime(**tokens).logits
+        probs = F.softmax(logits, dim=-1).cpu().numpy()
         results.append(probs[0])
     return results
 
 
-# MLAskによる感情分析
 def mlask_pipeline(messages):
     analyzer = MLAsk()
     results = []
@@ -102,72 +104,113 @@ def mlask_pipeline(messages):
     return results
 
 
-# バッチ処理
-batch_size = 64
-messages = df['Message'].tolist()
-all_sentiment_scores = []
-all_emotion_scores = []
+# 感情分析の実行
+def analyze_sentiment(messages, method="sentiment"):
+    if method == "sentiment":
+        return sentiment_pipeline(messages)
+    elif method == "weime":
+        return weime_pipeline(messages)
+    elif method == "mlask":
+        return mlask_pipeline(messages)
+    else:
+        raise ValueError(f"未知の感情分析方法: {method}")
 
-for i in tqdm(range(0, len(messages), batch_size), desc="感情分析中"):
-    batch_messages = messages[i:i + batch_size]
-    all_sentiment_scores.extend(sentiment_pipeline(batch_messages))
-    all_emotion_scores.extend(emotion_pipeline(batch_messages))
 
-# データフレームに結果を追加
-for i, sentiment in enumerate(sentiment_names):
-    df[sentiment] = [scores[i] for scores in all_sentiment_scores]
+# プロット作成
+def plot_emotions(df, analysis_methods=["sentiment", "weime", "mlask"], ax=None):
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(12, 6))
 
-# 2つ目の感情スコアをデータフレームに追加
-emotion_df = pd.DataFrame(all_emotion_scores, columns=emotion_names)
-df = pd.concat([df.reset_index(drop=True), emotion_df.reset_index(drop=True)], axis=1)
+    for method in analysis_methods:
+        if method == "sentiment":
+            label_col = "Sentiment_Label"
+            counts = df.groupby(['Time_in_seconds', label_col]).size().unstack(fill_value=0)
+            for sentiment in sentiment_names:
+                if sentiment in counts.columns:
+                    ax.plot(counts.index, counts[sentiment], marker='o', linestyle='-', label=f"Sentiment: {sentiment}")
+        elif method == "weime":
+            label_col = "Weime_Label"
+            counts = df.groupby(['Time_in_seconds', label_col]).size().unstack(fill_value=0)
+            for emotion in emotion_names:
+                if emotion in counts.columns:
+                    ax.plot(counts.index, counts[emotion], marker='o', linestyle='-', label=f"Weime: {emotion}")
+        elif method == "mlask":
+            label_col = "MLAsk_Emotion"
+            counts = df.groupby(['Time_in_seconds', label_col]).size().unstack(fill_value=0)
+            for emotion in counts.columns:
+                ax.plot(counts.index, counts[emotion], marker='o', linestyle='-', label=f"MLAsk: {emotion}")
 
-# スコアが最も高い感情をラベルとして追加
-df['Sentiment_Label'] = df[sentiment_names].idxmax(axis=1)
-df['Emotion_Label'] = df[emotion_names].idxmax(axis=1)
+    ax.set_title('感情別コメント数', fontsize=15)
+    ax.legend(title='感情', loc='upper right')
+    ax.grid(True)
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Number of Comments')
+    plt.tight_layout()
+    plt.show()
 
-# MLAsk感情分析の結果を追加
-print("MLAskで感情分析を実行中...")
-df['MLAsk_Emotion'] = mlask_pipeline(messages)
 
-# MLAsk感情のプロット用データ作成
-mlask_counts = df.groupby(['Time_in_seconds', 'MLAsk_Emotion']).size().unstack(fill_value=0)
+# メイン処理
+def main_emotion_analysis(file_path, analysis_methods=["sentiment"], plot_results=True, save_dir="data/emotion"):
+    os.makedirs(save_dir, exist_ok=True)
 
-# プロット
-fig, axes = plt.subplots(3, 1, figsize=(12, 15), sharex=True)
+    # CSVファイル読み込みと前処理
+    df = pd.read_csv(file_path)
+    df = preprocess(df)
+    messages = df['Message'].tolist()
 
-# === ポジティブ/ニュートラル/ネガティブのプロット ===
-sentiment_counts = df.groupby(['Time_in_seconds', 'Sentiment_Label']).size().unstack(fill_value=0)
-for sentiment in sentiment_names:
-    if sentiment in sentiment_counts.columns:
-        axes[0].plot(sentiment_counts.index, sentiment_counts[sentiment], marker='o', linestyle='-', label=sentiment)
-axes[0].set_title('感情別コメント数（ポジティブ/ニュートラル/ネガティブ）', fontsize=15)
-axes[0].legend(title='感情', loc='upper right')
-axes[0].grid(True)
+    # 分析結果を保存する
+    for method in analysis_methods:
+        print(f"選択された感情分析方法: {method}")
 
-# === 8分類感情のプロット ===
-emotion_counts = df.groupby(['Time_in_seconds', 'Emotion_Label']).size().unstack(fill_value=0)
-for emotion in emotion_names:
-    if emotion in emotion_counts.columns:
-        axes[1].plot(emotion_counts.index, emotion_counts[emotion], marker='o', linestyle='-', label=emotion)
-axes[1].set_title('感情別コメント数（8分類）', fontsize=15)
-axes[1].legend(title='感情', loc='upper right')
-axes[1].grid(True)
+        # 保存ファイル名を作成
+        file_base_name = os.path.splitext(os.path.basename(file_path))[0]
+        save_file_name = f"{file_base_name}_analysis.csv"
+        save_path = os.path.join(save_dir, save_file_name)
 
-# === MLAsk感情のプロット ===
-if not mlask_counts.empty:  # データが空でない場合のみプロット
-    for mlask_emotion in mlask_counts.columns:
-        axes[2].plot(mlask_counts.index, mlask_counts[mlask_emotion], marker='o', linestyle='-', label=mlask_emotion)
-    axes[2].set_title('MLAsk感情別コメント数', fontsize=15)
-    axes[2].legend(title='感情', loc='upper right')
-    axes[2].grid(True)
-else:
-    print("MLAsk感情データがありません。プロットをスキップします。")
+        # ファイルが存在する場合は既存のデータを読み込む
+        if os.path.exists(save_path):
+            print(f"既存の分析結果を読み込みます: {save_path}")
+            df_existing = pd.read_csv(save_path)
+        else:
+            df_existing = df.copy()
 
-# レイアウト調整と表示
-plt.tight_layout()
-plt.show()
+        # 分析実行
+        if method == "mlask":
+            df_existing['MLAsk_Emotion'] = analyze_sentiment(messages, method=method)
+        else:
+            all_scores = []
+            batch_size = 64
+            for i in tqdm(range(0, len(messages), batch_size), desc=f"{method} 感情分析中"):
+                batch_messages = messages[i:i + batch_size]
+                all_scores.extend(analyze_sentiment(batch_messages, method=method))
 
-# データフレームをCSVファイルとして保存
-file_name = os.path.splitext(os.path.basename(file_path))[0]  # 拡張子を除いたファイル名を取得
-df.to_csv(f'./chat_messages_with_sentiment_and_emotion={file_name}.csv', index=False, encoding='utf-8-sig')
-print(f"分析結果を 'chat_messages_with_sentiment_and_emotion={file_name}.csv' に保存しました。")
+            if method == "sentiment":
+                for i, sentiment in enumerate(sentiment_names):
+                    df_existing[f"Sentiment_{sentiment.capitalize()}"] = [scores[i] for scores in all_scores]
+                # 修正点: 正しいカラム名を使用
+                sentiment_columns = [f"Sentiment_{sentiment.capitalize()}" for sentiment in sentiment_names]
+                df_existing['Sentiment_Label'] = df_existing[sentiment_columns].idxmax(axis=1).str.replace('Sentiment_',
+                                                                                                           '').str.lower()
+            elif method == "weime":
+                for i, emotion in enumerate(emotion_names):
+                    df_existing[f"Weime_{emotion}"] = [scores[i] for scores in all_scores]
+                weime_columns = [f"Weime_{emotion}" for emotion in emotion_names]
+                df_existing['Weime_Label'] = df_existing[weime_columns].idxmax(axis=1).str.replace('Weime_', '')
+
+        # 結果をCSVに保存
+        df_existing.to_csv(save_path, index=False, encoding='utf-8-sig')
+        print(f"{method} の分析結果を保存しました: {save_path}")
+
+    # プロット作成
+    if plot_results:
+        analysis_results = pd.read_csv(
+            os.path.join(save_dir, f"{os.path.splitext(os.path.basename(file_path))[0]}_analysis.csv"))
+        plot_emotions(analysis_results, analysis_methods=analysis_methods)
+
+    return
+
+
+if __name__ == "__main__":
+    file_path = 'data/chat_messages/にじさんじ　切り抜き_2024-11-16_18-25-51_videos_processed/4agZGzQLfF8.csv'
+    # 複数の感情分析を実行
+    main_emotion_analysis(file_path, analysis_methods=["sentiment", "weime", "mlask"], plot_results=True)

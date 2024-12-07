@@ -8,7 +8,7 @@ import search_csv_chat_download
 from audio_transcription_comparator import download_yt_sound
 from audio_transcription_comparator import audio_transcription2csv
 from audio_transcription_comparator import compare_segments
-
+from analyze_chat_emotions import main_emotion_analysis
 
 def download_and_transcribe(source_url, clipping_url):
     """
@@ -111,20 +111,25 @@ if __name__ == "__main__":
     # 元配信URLと切り抜きURL
     source_url = search_process_df["Original URL"]
     clipping_url = search_process_df["Video URL"]
+    source_file = search_process_df["File Path"]
     print(f"元配信URL: {source_url}")
     print(f"切り抜きURL: {clipping_url}")
 
     # 結果を記録するリスト
     results = []
+    analysis_files = []
 
-    # result = download_and_transcribe(source_url[0], clipping_url[0])
-    # results.append(result)
-    # print(f"{0+1}番目の動画の処理が完了しました。")
+    result = download_and_transcribe(source_url[0], clipping_url[0])
+    results.append(result)
+    if result["status"] == "success":
+        print(source_file[0])
+        analysis_files.append(main_emotion_analysis(str(source_file[0]), analysis_methods=["sentiment", "weime", "mlask"], plot_results=True, save_dir="data/emotion"))
+    print(f"{0+1}番目の動画の処理が完了しました。")
 
-    for i in tqdm(range(len(source_url))):
-        result = download_and_transcribe(source_url[i], clipping_url[i])
-        results.append(result)
-        print(f"{i+1}番目の動画の処理が完了しました。")
+    # for i in tqdm(range(len(source_url))):
+    #     result = download_and_transcribe(source_url[i], clipping_url[i])
+    #     results.append(result)
+    #     print(f"{i+1}番目の動画の処理が完了しました。")
 
     # 結果をデータフレームに保存
     results_df = pd.DataFrame(results)
