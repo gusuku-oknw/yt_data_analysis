@@ -90,29 +90,36 @@ def download_and_transcribe(source_url, clipping_url):
 
 
 if __name__ == "__main__":
-    search_keyword = "博衣こより　切り抜き"
+    # search_keyword = "博衣こより　切り抜き"
     # 現在時刻を取得し、フォーマットする
     current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    csv_filename = f"{search_keyword}_{current_time}_videos.csv"
+    # csv_filename = f"{search_keyword}_{current_time}_videos.csv"
 
     # チャットデータのダウンロード
     # search_main(search_keyword = "博衣こより　切り抜き")
-    search_descriptions_df = data_collection.search_main(search_keyword)
-    search_process_df = data_collection.add_original_video_urls(search_descriptions_df)
-    search_process_df.to_csv(csv_filename, index=False, encoding='utf-8-sig')
+    # search_descriptions_df = data_collection.search_main(search_keyword)
+    # search_process_df = data_collection.add_original_video_urls(search_descriptions_df)
+    # search_process_df.to_csv(csv_filename, index=False, encoding='utf-8-sig')
     # get_popular_main(channel_id = "UCs6nmQViDpUw0nuIx9c_WvA")
 
     # チャットデータのダウンロード
-    csv_filename = f"urls_{current_time}.csv"
+    csv_search_filename = f"urls_{current_time}.csv"
+    csv_filename = "data/にじさんじ　切り抜き_2024-11-16_18-25-51_videos_processed.csv"
     search_process_df = search_csv_chat_download.list_original_urls(csv_filename)
-    search_process_df.to_csv(csv_filename, index=False, encoding='utf-8-sig')
+    search_process_df.to_csv(csv_search_filename, index=False, encoding='utf-8-sig')
 
     # 元配信URLと切り抜きURL
     source_url = search_process_df["Original URL"]
     clipping_url = search_process_df["Video URL"]
+    print(f"元配信URL: {source_url}")
+    print(f"切り抜きURL: {clipping_url}")
 
     # 結果を記録するリスト
     results = []
+
+    # result = download_and_transcribe(source_url[0], clipping_url[0])
+    # results.append(result)
+    # print(f"{0+1}番目の動画の処理が完了しました。")
 
     for i in tqdm(range(len(source_url))):
         result = download_and_transcribe(source_url[i], clipping_url[i])

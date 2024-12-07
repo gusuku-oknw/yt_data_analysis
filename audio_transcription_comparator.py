@@ -217,29 +217,33 @@ def download_yt_sound(url, output_dir="data/sound", audio_only=True):
     os.makedirs(output_dir, exist_ok=True)
 
     # 出力ファイル名を生成（拡張子を確認して付与）
-    video_id = get_video_id_from_url(remove_query_params(url))
-    file_name = f"{video_id}.mp3"
+    file_name = f"{get_video_id_from_url(remove_query_params(url))}.mp3"
     file_path = os.path.join(output_dir, file_name)
+
+    # ファイルが存在する場合はダウンロードをスキップ
+    if os.path.exists(file_path):
+        print(f"ファイルは既に存在します: {file_path}")
+        return file_path
 
     ydl_opts = {
         'format': 'bestaudio' if audio_only else 'bestvideo+bestaudio',
-        'outtmpl': file_path,
+        'outtmpl': file_path,  # ここで拡張子を含める
         'noplaylist': True,
         'quiet': False,
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }] if audio_only else None
+        'postprocessors': [  # 音声のみの場合の後処理
+            {
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }
+        ] if audio_only else None
     }
 
+    # YoutubeDLを使用してダウンロード
     with YoutubeDL(ydl_opts) as ydl:
         ydl.extract_info(url, download=True)
 
-    # ダウンロードされたファイルの確認と修正
-    if not file_path.endswith(".mp3"):
-        file_path = f"{file_path}.mp3"
-
+    print(f"ファイルをダウンロードしました: {file_path}")
     return file_path
 
 # 音声ファイルをWAV形式に変換

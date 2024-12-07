@@ -215,16 +215,39 @@ class AudioTranscriber:
 
     @staticmethod
     def extract_vocals(audio_file):
-        # ディレクトリのルートを取得
-        root_directory = os.path.dirname(audio_file)
+        """
+        指定された音声ファイルからボーカルを抽出する。
 
-        # ボーカルを抽出
-        command = ["demucs", "-d", "cuda", "-o", root_directory, audio_file]
-        subprocess.run(command, check=True)
-        # ファイル名を取得
-        basename = os.path.splitext(os.path.basename(audio_file))[0]
+        Parameters:
+            audio_file (str): 入力音声ファイルのパス。
 
-        return f"{root_directory}/htdemucs/{basename}/vocals.wav"
+        Returns:
+            str: 抽出されたボーカル音声ファイルのパス。
+        """
+        try:
+            # ディレクトリのルートを取得
+            root_directory = os.path.dirname(audio_file)
+
+            # ボーカルを抽出
+            command = ["demucs", "-d", "cuda", "-o", root_directory, audio_file]
+            subprocess.run(command, check=True)
+
+            # ファイル名を取得
+            basename = os.path.splitext(os.path.basename(audio_file))[0]
+
+            # ボーカルファイルのパスを返す
+            vocals_path = f"{root_directory}/htdemucs/{basename}/vocals.wav"
+            print(f"ボーカルファイルが生成されました: {vocals_path}")
+            return vocals_path
+
+        except subprocess.CalledProcessError as e:
+            print(f"Demucs 実行中にエラーが発生しました: {e}")
+        except FileNotFoundError as e:
+            print(f"Demucs が見つかりません。インストールされていることを確認してください: {e}")
+        except Exception as e:
+            print(f"予期しないエラーが発生しました: {e}")
+
+        return None
 
     def transcribe_audio_and_split_video(self, segment_files, keep_blocks):
         transcriptions = []
