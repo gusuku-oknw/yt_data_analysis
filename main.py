@@ -59,8 +59,8 @@ def download_and_transcribe(source_url, clipping_url):
         matches, unmatched = compare_segments(clipping_silences, source_silences)
 
         # ファイル名を作成
-        source_basename = os.path.basename(source_audio).replace(".wav", "")
-        clipping_basename = os.path.basename(clipping_audio).replace(".wav", "")
+        source_basename = os.path.basename(source_audio).replace(".mp3", "")
+        clipping_basename = os.path.basename(clipping_audio).replace(".mp3", "")
         match_file = os.path.join(comparison_dir, "matches", f"{source_basename}_{clipping_basename}_matches.csv")
         unmatched_file = os.path.join(comparison_dir, "unmatched", f"{source_basename}_{clipping_basename}_unmatched.csv")
 
@@ -86,7 +86,6 @@ def download_and_transcribe(source_url, clipping_url):
             "status": "failed",
             "error": str(e)
         }
-
 
 
 if __name__ == "__main__":
@@ -119,19 +118,34 @@ if __name__ == "__main__":
     results = []
     analysis_files = []
 
-    result = download_and_transcribe(source_url[0], clipping_url[0])
-    results.append(result)
-    if result["status"] == "success":
-        print(source_file[0])
-        analysis_files.append(main_emotion_analysis(str(source_file[0]), analysis_methods=["sentiment", "weime", "mlask"], plot_results=True, save_dir="data/emotion"))
-    print(f"{0+1}番目の動画の処理が完了しました。")
+    for i, (source, clip, file_path) in enumerate(zip(source_url, clipping_url, source_file), start=1):
+        print(f"\n=== {i} 番目の動画の処理を開始します ===")
+        print(f"元配信URL: {source}")
+        print(f"切り抜きURL: {clip}")
 
-    # for i in tqdm(range(len(source_url))):
-    #     result = download_and_transcribe(source_url[i], clipping_url[i])
-    #     results.append(result)
-    #     print(f"{i+1}番目の動画の処理が完了しました。")
+        # ダウンロードと文字起こしの処理
+        result = download_and_transcribe(source, clip)
+        results.append(result)
+
+        if result["status"] == "success":
+            print(f"ダウンロードと文字起こしが成功しました: {file_path}")
+
+            # 感情分析の実行
+            analysis_result = main_emotion_analysis(
+                file_path=file_path,
+                analysis_methods=["sentiment", "weime", "mlask"],
+                plot_results=False,  # プロットを表示しない
+                plot_save=f"data/images/emotion_plot_{os.path.splitext(os.path.basename(file_path))[0]}.png",  # プロット画像を保存
+                save_dir="data/emotion"
+            )
+            analysis_files.append(analysis_result)
+            print(f"{i} 番目の動画の感情分析が完了しました。")
+        else:
+            print(f"{i} 番目の動画の処理が失敗しました: {result.get('error', '詳細不明のエラー')}")
+
+    print("\n全ての動画処理が完了しました。")
 
     # 結果をデータフレームに保存
     results_df = pd.DataFrame(results)
-    results_df.to_csv("processing_results.csv", index=False, encoding="utf-8-sig")
+    results_df.to_csv(f"processing_{current_time}_results.csv", index=False, encoding="utf-8-sig")
     print("処理結果を 'processing_results.csv' に保存しました。")

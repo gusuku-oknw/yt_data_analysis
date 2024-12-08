@@ -1,32 +1,24 @@
 import os
-import traceback
-
 import pandas as pd
+import numpy as np
 import soundfile as sf
 from transformers import pipeline
-from datasets import load_dataset
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from matplotlib.ticker import FuncFormatter
 from matplotlib import rcParams
-
-import numpy as np
-from openunmix import predict
 from yt_dlp import YoutubeDL
 from faster_whisper import WhisperModel
-import subprocess
 import torch
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 import librosa
 from chat_download import get_video_id_from_url, remove_query_params
 from pydub import AudioSegment
 from charset_normalizer import detect
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from difflib import SequenceMatcher
-
 from audio_transcriber import AudioTranscriber
+from janome.tokenizer import Tokenizer
+from difflib import SequenceMatcher
+from sklearn.feature_extraction.text import TfidfVectorizer
+from tqdm import tqdm
 
 
 # 音声ファイルを文字起こし
@@ -107,75 +99,81 @@ def fast_whisper_transcription(audio_file, model_size="base", device="cuda", com
     transcription = " ".join([segment.text for segment in segments])
     return transcription
 
-# テキストの類似度を計算
-def compare_segments(clipping_segments, source_segments, initial_threshold=0.8):
+# Janomeトークナイザーの初期化
+janome_tokenizer = Tokenizer()
+
+def preprocess_text(text):
+    """テキストの前処理（スペース削除、記号削除など）"""
     import re
-    from difflib import SequenceMatcher
+    text = re.sub(r'\s+', '', text)
+    text = re.sub(r'[^\w\s]', '', text)
+    return text
 
-    def preprocess_text(text):
-        """テキストの前処理（スペース削除、記号削除など）"""
-        text = re.sub(r'\s+', '', text)
-        text = re.sub(r'[^\w\s]', '', text)
-        return text
+def tokenize_japanese(text):
+    tokens = [token.surface for token in janome_tokenizer.tokenize(text)]
+    return tokens
 
-    def calculate_similarity(text1, text2):
-        """テキスト間の類似度を計算"""
-        text1 = preprocess_text(text1)
-        text2 = preprocess_text(text2)
+def calculate_similarity(text1, text2, method="sequence"):
+    text1 = preprocess_text(text1)
+    text2 = preprocess_text(text2)
+
+    if not text1.strip() or not text2.strip():
+        return 0.0
+
+    if method == "sequence":
         return SequenceMatcher(None, text1, text2).ratio()
+    elif method == "jaccard":
+        set1, set2 = set(tokenize_japanese(text1)), set(tokenize_japanese(text2))
+        intersection = len(set1 & set2)
+        union = len(set1 | set2)
+        return intersection / union if union != 0 else 0
+    elif method == "tfidf":
+        vectorizer = TfidfVectorizer(tokenizer=tokenize_japanese)
+        try:
+            tfidf_matrix = vectorizer.fit_transform([text1, text2]).toarray()
+            numerator = np.dot(tfidf_matrix[0], tfidf_matrix[1])
+            denominator = np.linalg.norm(tfidf_matrix[0]) * np.linalg.norm(tfidf_matrix[1])
+            return numerator / denominator if denominator != 0 else 0.0
+        except ValueError:
+            return 0.0
+    else:
+        raise ValueError("Unsupported similarity method")
 
-    def find_best_match(segment, source_segments, used_segments, threshold=0.8):
-        """切り抜きセグメントに最も類似する元動画セグメントを探す"""
-        best_match = None
-        max_similarity = 0
-
-        for src in source_segments:
-            # 使用済みセグメントはスキップ
-            if src["start"] in used_segments:
-                continue
-
-            similarity = calculate_similarity(segment["text"], src["text"])
-            if similarity > max_similarity and similarity >= threshold:
-                best_match = src
-                max_similarity = similarity
-
-        return best_match
-
-    # ユニークな元セグメントを抽出
-    unique_source_segments = []
-    seen_texts = set()
-
-    for src in source_segments:
-        text = preprocess_text(src["text"])
-        if text not in seen_texts:
-            unique_source_segments.append(src)
-            seen_texts.add(text)
-
+def compare_segments(clipping_segments, source_segments, initial_threshold=0.8):
     # 処理
     matches = []
     unmatched = []
     used_segments = set()
 
-    for clip in clipping_segments:
+    for clip in tqdm(clipping_segments):
         try:
             threshold = initial_threshold
-            while threshold > 0.5:
-                best_match = find_best_match(clip, unique_source_segments, used_segments, threshold)
-                if best_match:
-                    matches.append({
-                        "clip_text": clip["text"],
-                        "clip_start": clip["start"],
-                        "clip_end": clip["end"],
-                        "source_text": best_match["text"],
-                        "source_start": best_match["start"],
-                        "source_end": best_match["end"],
-                        "similarity": calculate_similarity(clip["text"], best_match["text"]),
-                    })
-                    used_segments.add(best_match["start"])  # 使用済みの元セグメントを追跡
-                    break
-                threshold -= 0.1
+            found_match = False
 
-            if threshold <= 0.5:
+            # 長いテキストを分割
+            long_segments = [clip["text"]]
+            if len(clip["text"]) > 50:
+                long_segments = [clip["text"][i:i+50] for i in range(0, len(clip["text"]), 50)]
+
+            for segment_text in long_segments:
+                while threshold > 0.1:
+                    best_match = find_best_match({"text": segment_text}, source_segments, used_segments, threshold)
+                    if best_match:
+                        matches.append({
+                            "clip_text": segment_text,
+                            "clip_start": clip["start"],
+                            "clip_end": clip["end"],
+                            "source_text": best_match["text"],
+                            "source_start": best_match["start"],
+                            "source_end": best_match["end"],
+                            "similarity": calculate_similarity(segment_text, best_match["text"], method="tfidf"),
+                        })
+                        used_segments.add(best_match["start"])  # 使用済みの元セグメントを追跡
+                        found_match = True
+                        break
+                    threshold -= 0.05  # 閾値を小刻みに下げる
+
+            if not found_match:
                 unmatched.append({
                     "clip_text": clip["text"],
                     "clip_start": clip["start"],
@@ -201,6 +199,23 @@ def compare_segments(clipping_segments, source_segments, initial_threshold=0.8):
 
     return matches, unmatched
 
+def find_best_match(segment, source_segments, used_segments, threshold=0.8):
+    """切り抜きセグメントに最も類似する元動画セグメントを探す"""
+    best_match = None
+    max_similarity = 0
+
+    for src in source_segments:
+        # 使用済みセグメントはスキップ
+        if src["start"] in used_segments:
+            continue
+
+        similarity = calculate_similarity(segment["text"], src["text"], method="tfidf")
+        if similarity > max_similarity and similarity >= threshold:
+            best_match = src
+            max_similarity = similarity
+
+    return best_match
+
 # YouTube動画または音声をダウンロード
 def download_yt_sound(url, output_dir="data/sound", audio_only=True):
     """
@@ -216,18 +231,20 @@ def download_yt_sound(url, output_dir="data/sound", audio_only=True):
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    # 出力ファイル名を生成（拡張子を確認して付与）
-    file_name = f"{get_video_id_from_url(remove_query_params(url))}.mp3"
-    file_path = os.path.join(output_dir, file_name)
+    # 出力ファイル名を生成（拡張子なし）
+    video_id = get_video_id_from_url(remove_query_params(url))
+    file_name = video_id  # 拡張子はFFmpegで付加
+    file_path_no_ext = os.path.join(output_dir, file_name)
+    file_path_with_ext = f"{file_path_no_ext}.mp3"
 
     # ファイルが存在する場合はダウンロードをスキップ
-    if os.path.exists(file_path):
-        print(f"ファイルは既に存在します: {file_path}")
-        return file_path
+    if os.path.exists(file_path_with_ext):
+        print(f"ファイルは既に存在します: {file_path_with_ext}")
+        return file_path_with_ext
 
     ydl_opts = {
         'format': 'bestaudio' if audio_only else 'bestvideo+bestaudio',
-        'outtmpl': file_path,  # ここで拡張子を含める
+        'outtmpl': file_path_no_ext,  # 拡張子を付けない
         'noplaylist': True,
         'quiet': False,
         'postprocessors': [  # 音声のみの場合の後処理
@@ -243,8 +260,8 @@ def download_yt_sound(url, output_dir="data/sound", audio_only=True):
     with YoutubeDL(ydl_opts) as ydl:
         ydl.extract_info(url, download=True)
 
-    print(f"ファイルをダウンロードしました: {file_path}")
-    return file_path
+    print(f"ファイルをダウンロードしました: {file_path_with_ext}")
+    return file_path_with_ext
 
 # 音声ファイルをWAV形式に変換
 def convert_to_wav(audio_file, output_dir):
@@ -429,24 +446,27 @@ def plt_compare(matches_csv, unmatched_csv):
 
 
 if __name__ == "__main__":
-    # 元配信URLと切り抜きURL
-    source_url = "https://www.youtube.com/live/YGGLxywB3Tw?si=O5Aa-5KqFPqQD8Xd"
-    clipping_url = "https://www.youtube.com/watch?v=7-1fNxXj_xM"
+    # # 元配信URLと切り抜きURL
+    # source_url = "https://www.youtube.com/live/YGGLxywB3Tw?si=O5Aa-5KqFPqQD8Xd"
+    # clipping_url = "https://www.youtube.com/watch?v=7-1fNxXj_xM"
+    #
+    # # ステップ1: 音声ダウンロード
+    # print("元配信音声をダウンロード中...")
+    # source_audio = download_yt_sound(source_url, output_dir="data/sound/source_audio")
+    # # print(source_audio)
+    # print("切り抜き音声をダウンロード中...")
+    # clipping_audio = download_yt_sound(clipping_url, output_dir="data/sound/clipping_audio")
+    # # print(clipping_audio)
+    # test = "./data"
 
-    # ステップ1: 音声ダウンロード
-    print("元配信音声をダウンロード中...")
-    source_audio = download_yt_sound(source_url, output_dir="data/sound/source_audio")
-    # print(source_audio)
-    print("切り抜き音声をダウンロード中...")
-    clipping_audio = download_yt_sound(clipping_url, output_dir="data/sound/clipping_audio")
-    # print(clipping_audio)
-    test = "./data"
+    source_audio = "data/sound/source_audio/pnHdRQbR2zs.mp3"
+    clipping_audio = "data/sound/clipping_audio/-bRcKCM5_3E.mp3"
 
     # ステップ2: Distil-Whisperで文字起こし
     print("元配信音声を文字起こし中...")
     source_silences = audio_transcription2csv(
         source_audio,
-        output_directory="data/sound/source_audio_transcription"
+        output_directory="data/transcription/source"
     )
     print(f"元配信文字起こし結果: {source_silences}")
 
@@ -454,7 +474,7 @@ if __name__ == "__main__":
     print("切り抜き音声を文字起こし中...")
     clipping_silences = audio_transcription2csv(
         clipping_audio,
-        output_directory="data/sound/clipping_audio_transcription"
+        output_directory="data/transcription/clipping"
     )
     print(f"切り抜き文字起こし結果: {clipping_silences}")
 
@@ -463,9 +483,15 @@ if __name__ == "__main__":
     print(len(source_silences), len(clipping_silences))
     matches, unmatched = compare_segments(clipping_silences, source_silences)
 
+    file_name_basename = \
+        (f"{os.path.basename(source_audio).replace('.wav', '').replace('.mp3', '')}"
+         f"_"
+         f"{os.path.basename(clipping_audio).replace('.wav', '').replace('.mp3', '')}"
+         f".csv")
+
     # ファイル名を作成
     output_file = os.path.join(root_directory,
-                               f"{os.path.basename(source_audio).replace('.wav', '')}_{os.path.basename(clipping_audio).replace('.wav', '')}.csv")
+                               f"{file_name_basename}")
     unmatched_file = output_file.replace(".csv", "_unmatched.csv")
 
     # CSVに保存
