@@ -56,7 +56,13 @@ def download_and_transcribe(source_url, clipping_url):
 
         # ステップ3: テキストの比較
         print(len(source_silences), len(clipping_silences))
-        matches, unmatched = compare_segments(clipping_silences, source_silences)
+        matches, unmatched = compare_segments(
+            clipping_silences,
+            source_silences,
+            initial_threshold=0.8,
+            fast_method="sequence",  # まずは高速なsequenceでマッチング
+            slow_method="tfidf"  # Unmatchedに対してのみtfidfで再マッチング
+        )
 
         # ファイル名を作成
         source_basename = os.path.basename(source_audio).replace(".mp3", "")

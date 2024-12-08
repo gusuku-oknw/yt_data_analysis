@@ -194,7 +194,6 @@ class AudioTranscriber:
         device = "cuda:0" if torch.cuda.is_available() else "cpu"
         model_kwargs = {"attn_implementation": "sdpa"} if torch.cuda.is_available() else {}
         generate_kwargs = {
-            "task": "transcribe",
             "return_timestamps": True,
             "language": "japanese"
         }

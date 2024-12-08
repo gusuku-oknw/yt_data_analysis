@@ -161,7 +161,10 @@ def list_original_urls(csv_file, base_directory="data/chat_messages", url_column
                 continue
 
             print(f"\r処理中のURL: {original_url}")
-            chat_download.chat_download_csv(original_url, target_directory)
+            if (chat_download.chat_download_csv(original_url, target_directory)) is None:
+                print(f"\rエラーが発生しました: ダウンロード失敗 - URL: {original_url}")
+                continue
+
             print(f"\rチャットデータを保存しました: {original_url}")
             download_records.append({
                 "Video URL": video_url,

@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -222,7 +224,7 @@ def main_emotion_analysis(file_path, analysis_methods=["sentiment"], plot_result
     os.makedirs(save_dir, exist_ok=True)
 
     # データ読み込みと前処理
-    df = pd.read_csv(file_path)
+    df = pd.read_csv(str(Path(file_path)).replace("\u3000", "　"))
     df = preprocess(df)
     messages = df['Message'].tolist()
 
