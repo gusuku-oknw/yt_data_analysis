@@ -9,6 +9,9 @@ from audio_transcription_comparator import download_yt_sound
 from audio_transcription_comparator import audio_transcription2csv
 from audio_transcription_comparator import compare_segments
 from analyze_chat_emotions import main_emotion_analysis
+from chat_download import get_video_id_from_url, remove_query_params, chat_download_csv
+from search_csv_chat_download import list_original_urls
+from data_collection import search_main, get_popular_main
 
 def download_and_transcribe(source_url, clipping_url):
     """
@@ -46,7 +49,8 @@ def download_and_transcribe(source_url, clipping_url):
         print("元配信音声を文字起こし中...")
         source_silences = audio_transcription2csv(
             source_audio,
-            output_directory=os.path.join(transcription_dir, "source")
+            output_directory=os.path.join(transcription_dir, "source"),
+            extract=False
         )
         print("切り抜き音声を文字起こし中...")
         clipping_silences = audio_transcription2csv(
@@ -109,7 +113,7 @@ if __name__ == "__main__":
 
     # チャットデータのダウンロード
     csv_search_filename = f"urls_{current_time}.csv"
-    csv_filename = "data/にじさんじ　切り抜き_2024-11-16_18-25-51_videos_processed.csv"
+    csv_filename = "data/ホロライブ　切り抜き_2024-11-16_18-26-28_videos_processed.csv"
     search_process_df = search_csv_chat_download.list_original_urls(csv_filename)
     search_process_df.to_csv(csv_search_filename, index=False, encoding='utf-8-sig')
 
@@ -123,29 +127,57 @@ if __name__ == "__main__":
     # 結果を記録するリスト
     results = []
     analysis_files = []
+    progress_file = "processing_progress.csv"
+
+    # 初期化
+    if not os.path.exists(progress_file):
+        pd.DataFrame(columns=["index", "source_url", "clipping_url", "file_path", "status"]).to_csv(
+            progress_file, index=False, encoding="utf-8-sig"
+        )
 
     for i, (source, clip, file_path) in enumerate(zip(source_url, clipping_url, source_file), start=1):
         print(f"\n=== {i} 番目の動画の処理を開始します ===")
         print(f"元配信URL: {source}")
         print(f"切り抜きURL: {clip}")
+        matches_filename = f"data/matches/{get_video_id_from_url(remove_query_params(source))}_{get_video_id_from_url(remove_query_params(clip))}.csv"
+        print(f"matches_filename: {matches_filename}")
+        # すでに処理済みの場合はスキップ# ファイルが存在するか確認
+        if os.path.exists(matches_filename):
+            print(f"File already exists: {matches_filename}. Skipping.")
+            continue
+        # ステータス更新: 文字起こし中
+        results.append(
+            {"index": i, "source_url": source, "clipping_url": clip, "file_path": file_path, "status": "文字起こし中"})
+        pd.DataFrame(results).to_csv(progress_file, index=False, encoding="utf-8-sig")
 
         # ダウンロードと文字起こしの処理
         result = download_and_transcribe(source, clip)
-        results.append(result)
+        results[-1]["status"] = result["status"] if result[
+                                                        "status"] == "success" else f"失敗: {result.get('error', '詳細不明')}"
+        pd.DataFrame(results).to_csv(progress_file, index=False, encoding="utf-8-sig")
 
         if result["status"] == "success":
             print(f"ダウンロードと文字起こしが成功しました: {file_path}")
+
+            # ステータス更新: 感情分析中
+            results[-1]["status"] = "感情分析中"
+            pd.DataFrame(results).to_csv(progress_file, index=False, encoding="utf-8-sig")
 
             # 感情分析の実行
             analysis_result = main_emotion_analysis(
                 file_path=file_path,
                 analysis_methods=["sentiment", "weime", "mlask"],
                 plot_results=False,  # プロットを表示しない
-                plot_save=f"data/images/emotion_plot_{os.path.splitext(os.path.basename(file_path))[0]}.png",  # プロット画像を保存
+                plot_save=None,
+                # プロット画像を保存
                 save_dir="data/emotion"
             )
             analysis_files.append(analysis_result)
             print(f"{i} 番目の動画の感情分析が完了しました。")
+
+            # ステータス更新: 完了
+            results[-1]["status"] = "完了"
+            pd.DataFrame(results).to_csv(progress_file, index=False, encoding="utf-8-sig")
         else:
             print(f"{i} 番目の動画の処理が失敗しました: {result.get('error', '詳細不明のエラー')}")
 
@@ -153,5 +185,6 @@ if __name__ == "__main__":
 
     # 結果をデータフレームに保存
     results_df = pd.DataFrame(results)
+    current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_df.to_csv(f"processing_{current_time}_results.csv", index=False, encoding="utf-8-sig")
-    print("処理結果を 'processing_results.csv' に保存しました。")
+    print(f"処理結果を 'processing_{current_time}_results.csv' に保存しました。")

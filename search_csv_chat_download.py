@@ -17,22 +17,18 @@ def split_urls(row):
     return url_pattern.findall(row)
 
 # ディレクトリ作成
-def create_directory(base_directory, csv_filename):
+def create_directory(base_directory):
     """
-    CSVファイル名を基に保存先ディレクトリを作成。
+    保存先ディレクトリを作成。
 
     Parameters:
         base_directory (str): 基本のディレクトリパス。
-        csv_filename (str): CSVファイル名。
 
     Returns:
         str: 作成したディレクトリのパス。
     """
-    directory_name = os.path.splitext(os.path.basename(csv_filename))[0]
-    target_directory = os.path.join(base_directory, directory_name)
-
-    os.makedirs(target_directory, exist_ok=True)
-    return target_directory
+    os.makedirs(base_directory, exist_ok=True)
+    return base_directory
 
 
 # URLフィルタリング
@@ -102,7 +98,7 @@ def list_original_urls(csv_file, base_directory="data/chat_messages", url_column
         print(f"エラーが発生しました: {str(e)}")
         return pd.DataFrame()
 
-    target_directory = create_directory(base_directory, os.path.splitext(os.path.basename(csv_file))[0])
+    target_directory = create_directory(base_directory)
 
     all_url = []
     for _, row in urls.iterrows():

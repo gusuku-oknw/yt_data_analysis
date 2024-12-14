@@ -12,6 +12,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import matplotlib
 from mlask import MLAsk
+matplotlib.use('Agg')  # これでTkを使わないバックエンドに変更
 
 # 日本語フォントの設定
 matplotlib.rcParams['font.family'] = 'Meiryo'
@@ -291,7 +292,7 @@ def main_emotion_analysis(file_path, analysis_methods=["sentiment"], plot_result
     return df_existing
 
 if __name__ == "__main__":
-    file_path = 'data/chat_messages/にじさんじ　切り抜き_2024-11-16_18-25-51_videos_processed/4agZGzQLfF8.csv'
+    file_path = 'data/chat_messages/4agZGzQLfF8.csv'
     print(os.path.basename(file_path))
     # 複数の感情分析を実行
     main_emotion_analysis(

@@ -8,6 +8,7 @@ import soundfile as sf
 import numpy as np
 import traceback
 import subprocess
+from tqdm import tqdm
 
 
 class AudioTranscriber:
@@ -154,7 +155,7 @@ class AudioTranscriber:
             print("Stereo audio detected, converting to mono.")
             data = data.reshape((-1, audio.channels)).mean(axis=1)  # ステレオ -> モノラル
 
-        for i, block in enumerate(keep_blocks):
+        for i, block in tqdm(enumerate(keep_blocks)):
             # サンプル単位の開始と終了位置を計算
             start_sample = int(block["from"] * samplerate)
             end_sample = int(block["to"] * samplerate)
@@ -170,7 +171,7 @@ class AudioTranscriber:
                 try:
                     sf.write(output_file, segment_data, samplerate)
                     segment_files.append(os.path.abspath(output_file))
-                    print(f"Saved segment {i}: {output_file}")
+                    # print(f"Saved segment {i}: {output_file}")
                 except Exception as e:
                     print(f"Error saving segment {i}: {e}")
             else:
@@ -209,35 +210,38 @@ class AudioTranscriber:
         audio, sampling_rate = librosa.load(audio_file, sr=16000)
         audio_input = {"raw": audio, "sampling_rate": sampling_rate}
         result = pipe(audio_input, generate_kwargs=generate_kwargs)
-        print("文字起こし結果:", result["text"])
+        # print("文字起こし結果:", result["text"])
         return result["text"]
 
     @staticmethod
     def extract_vocals(audio_file):
         """
         指定された音声ファイルからボーカルを抽出する。
-
-        Parameters:
-            audio_file (str): 入力音声ファイルのパス。
-
-        Returns:
-            str: 抽出されたボーカル音声ファイルのパス。
+        既にボーカルファイルが存在する場合はスキップ。
         """
         try:
-            # ディレクトリのルートを取得
             root_directory = os.path.dirname(audio_file)
+            basename = os.path.splitext(os.path.basename(audio_file))[0]
+            vocals_path = f"{root_directory}/htdemucs/{basename}/vocals.wav"
 
-            # ボーカルを抽出
-            command = ["demucs", "-d", "cuda", "-o", root_directory, audio_file]
+            # 既存ファイルのチェック
+            if os.path.exists(vocals_path):
+                print(f"ボーカルファイルが既に存在します: {vocals_path}")
+                return vocals_path
+
+            # ボーカル抽出を実行
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            print(f"Demucsを実行中 (デバイス: {device})...")
+
+            command = ['demucs', '-d', device, '-o', root_directory, audio_file]
             subprocess.run(command, check=True)
 
-            # ファイル名を取得
-            basename = os.path.splitext(os.path.basename(audio_file))[0]
-
-            # ボーカルファイルのパスを返す
-            vocals_path = f"{root_directory}/htdemucs/{basename}/vocals.wav"
-            print(f"ボーカルファイルが生成されました: {vocals_path}")
-            return vocals_path
+            # ファイルの存在を再確認
+            if os.path.exists(vocals_path):
+                print(f"ボーカルファイルが生成されました: {vocals_path}")
+                return vocals_path
+            else:
+                raise FileNotFoundError(f"ボーカルファイルが生成されませんでした: {vocals_path}")
 
         except subprocess.CalledProcessError as e:
             print(f"Demucs 実行中にエラーが発生しました: {e}")
@@ -253,7 +257,7 @@ class AudioTranscriber:
 
         num_segments = len(segment_files)
 
-        for i in range(num_segments):
+        for i in tqdm(range(num_segments)):
             block = keep_blocks[i]
             segment_start = block["from"]
             segment_end = block["to"]
@@ -265,7 +269,7 @@ class AudioTranscriber:
                 continue
 
             try:
-                print(f"Processing {audio_file}")
+                # print(f"Processing {audio_file}")
                 transcription = self.kotoba_whisper(audio_file)
                 transcriptions.append({
                     "text": transcription,
@@ -288,7 +292,7 @@ class AudioTranscriber:
 
         return transcriptions
 
-    def transcribe_segment(self, audio_path):
+    def transcribe_segment(self, audio_path, audio_extract=True):
         """
         音声ファイルを処理し、無音区間の外側を保持して文字起こしを行う。
 
@@ -300,7 +304,9 @@ class AudioTranscriber:
         """
         print(f"Transcribing audio file: {audio_path}")
         # ボーカルのみを抽出
-        audio_path = self.extract_vocals(audio_path)
+        if audio_extract:
+            audio_path = self.extract_vocals(audio_path)
+
         # audio_path = 'data/sound/clipping_audio_wav/htdemucs/7-1fNxXj_xM/vocals.wav'
         # オーディオデータを読み込む
         audio = AudioSegment.from_file(audio_path)
@@ -322,11 +328,11 @@ class AudioTranscriber:
 
         # 音声セグメントを保存
         segment_files = self.save_audio_segments(audio, keep_blocks, samplerate=samplerate)
-        print(f"Segment files: {segment_files}")
+        print(f"Segment files: {len(segment_files)}")
 
         # 各セグメントを文字起こし
         transcriptions = self.transcribe_audio_and_split_video(segment_files, keep_blocks)
-        print(f"Transcriptions: {transcriptions}")
+        print(f"Transcriptions: {len(transcriptions)}")
 
         return transcriptions
 

@@ -1,4 +1,7 @@
 import os
+from asyncio import as_completed
+from concurrent.futures import ThreadPoolExecutor
+
 import pandas as pd
 import numpy as np
 import soundfile as sf
@@ -19,6 +22,7 @@ from janome.tokenizer import Tokenizer
 from difflib import SequenceMatcher
 from sklearn.feature_extraction.text import TfidfVectorizer
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Janomeトークナイザーの初期化
 janome_tokenizer = Tokenizer()
@@ -60,67 +64,8 @@ def calculate_similarity(text1, text2, method="sequence"):
     else:
         raise ValueError("Unsupported similarity method")
 
-def compare_segments(clipping_segments, source_segments, initial_threshold=0.8):
-    # 処理
-    matches = []
-    unmatched = []
-    used_segments = set()
 
-    for clip in tqdm(clipping_segments):
-        try:
-            threshold = initial_threshold
-            found_match = False
-
-            # 長いテキストを分割
-            long_segments = [clip["text"]]
-            if len(clip["text"]) > 50:
-                long_segments = [clip["text"][i:i+50] for i in range(0, len(clip["text"]), 50)]
-
-            for segment_text in long_segments:
-                while threshold > 0.1:
-                    best_match = find_best_match({"text": segment_text}, source_segments, used_segments, threshold)
-                    if best_match:
-                        matches.append({
-                            "clip_text": segment_text,
-                            "clip_start": clip["start"],
-                            "clip_end": clip["end"],
-                            "source_text": best_match["text"],
-                            "source_start": best_match["start"],
-                            "source_end": best_match["end"],
-                            "similarity": calculate_similarity(segment_text, best_match["text"], method="tfidf"),
-                        })
-                        used_segments.add(best_match["start"])  # 使用済みの元セグメントを追跡
-                        found_match = True
-                        break
-                    threshold -= 0.05  # 閾値を小刻みに下げる
-
-            if not found_match:
-                unmatched.append({
-                    "clip_text": clip["text"],
-                    "clip_start": clip["start"],
-                    "clip_end": clip["end"]
-                })
-
-        except Exception as e:
-            print(f"Error processing clip '{clip['text']}': {e}")
-
-    # CSVに保存
-    matches_df = pd.DataFrame(matches)
-    unmatched_df = pd.DataFrame(unmatched)
-
-    if not matches_df.empty:
-        matches_df.to_csv('matches.csv', index=False)
-    else:
-        print("No matches to save.")
-
-    if not unmatched_df.empty:
-        unmatched_df.to_csv('unmatched.csv', index=False)
-    else:
-        print("No unmatched segments to save.")
-
-    return matches, unmatched
-
-def find_best_match(segment, source_segments, used_segments, threshold=0.8):
+def find_best_match(segment, source_segments, used_segments, threshold=0.8, method="tfidf"):
     """切り抜きセグメントに最も類似する元動画セグメントを探す"""
     best_match = None
     max_similarity = 0
@@ -130,12 +75,113 @@ def find_best_match(segment, source_segments, used_segments, threshold=0.8):
         if src["start"] in used_segments:
             continue
 
-        similarity = calculate_similarity(segment["text"], src["text"], method="tfidf")
+        similarity = calculate_similarity(segment["text"], src["text"], method=method)
         if similarity > max_similarity and similarity >= threshold:
             best_match = src
             max_similarity = similarity
 
     return best_match
+
+def compare_segments(clipping_segments, source_segments, initial_threshold=0.8, fast_method="sequence", slow_method="tfidf"):
+    """
+    切り抜きセグメント(clipping_segments)と元動画セグメント(source_segments)を比較し、最適なマッチングを行います。
+    まずfast_methodでマッチングを試み、マッチしなかったものについてのみslow_methodで再マッチングを行います。
+    並列処理を用いてパフォーマンスを向上させます。
+    """
+
+    matches = []
+    unmatched = []
+    used_segments = set()
+
+    def process_clip(clip, method):
+        try:
+            threshold = initial_threshold
+            found_match = False
+            clip_matches = []
+
+            # 長いテキストを50文字ごとに分割
+            long_segments = [clip["text"]]
+            if len(clip["text"]) > 50:
+                long_segments = [clip["text"][i:i + 50] for i in range(0, len(clip["text"]), 50)]
+            # 空白だけのセグメントは削除
+            long_segments = [seg for seg in long_segments if seg.strip()]
+
+            for segment_text in long_segments:
+                local_threshold = threshold
+                while local_threshold > 0.1:
+                    best_match = find_best_match({"text": segment_text}, source_segments, used_segments, local_threshold, method=method)
+                    if best_match:
+                        clip_matches.append({
+                            "clip_text": segment_text,
+                            "clip_start": clip["start"],
+                            "clip_end": clip["end"],
+                            "source_text": best_match["text"],
+                            "source_start": best_match["start"],
+                            "source_end": best_match["end"],
+                            "similarity": calculate_similarity(segment_text, best_match["text"], method=method),
+                        })
+                        used_segments.add(best_match["start"])
+                        found_match = True
+                        break
+                    local_threshold -= 0.05
+
+            if not found_match:
+                # このクリップはマッチングできなかった
+                return {
+                    "clip_text": clip["text"],
+                    "clip_start": clip["start"],
+                    "clip_end": clip["end"],
+                    "matched": False
+                }
+
+            return {"matches": clip_matches, "matched": True}
+
+        except Exception as e:
+            print(f"Error processing clip '{clip.get('text', 'Unknown')}': {e}")
+            return {"error": str(e), "matched": False}
+
+    # Step 1: Fast methodでのマッチング
+    print("Fast methodでのマッチングを実行中...")
+    with ThreadPoolExecutor() as executor:
+        futures = {executor.submit(process_clip, clip, fast_method): clip for clip in clipping_segments}
+        for future in tqdm(as_completed(futures), total=len(clipping_segments), desc="Comparing segments with fast_method"):
+            result = future.result()
+            if result.get("matched"):
+                matches.extend(result["matches"])
+            elif "clip_text" in result:
+                unmatched.append(result)
+
+    # Step 2: Slow methodでの再マッチング（unmatchedに対してのみ）
+    if unmatched:
+        print("Unmatchedに対してslow methodでのマッチングを実行中...")
+        still_unmatched = []
+        with ThreadPoolExecutor() as executor:
+            futures = {executor.submit(process_clip, u, slow_method): u for u in unmatched}
+            for future in tqdm(as_completed(futures), total=len(unmatched), desc="Comparing segments with slow_method"):
+                result = future.result()
+                if result.get("matched"):
+                    matches.extend(result["matches"])
+                elif "clip_text" in result:
+                    still_unmatched.append(result)
+
+        unmatched = still_unmatched
+
+    # CSVに保存
+    if matches:
+        matches_df = pd.DataFrame(matches)
+        matches_df.to_csv('matches.csv', index=False, encoding="utf-8-sig")
+        print("Matches saved to 'matches.csv'")
+    else:
+        print("No matches to save.")
+
+    if unmatched:
+        unmatched_df = pd.DataFrame(unmatched)
+        unmatched_df.to_csv('unmatched.csv', index=False, encoding="utf-8-sig")
+        print("Unmatched segments saved to 'unmatched.csv'")
+    else:
+        print("No unmatched segments to save.")
+
+    return matches, unmatched
 
 # YouTube動画または音声をダウンロード
 def download_yt_sound(url, output_dir="data/sound", audio_only=True):
@@ -229,7 +275,7 @@ def get_demucs_output_path(output_dir, audio_file):
 
     return vocals_path
 
-def audio_transcription2csv(audio_path, output_directory):
+def audio_transcription2csv(audio_path, output_directory, extract=True):
     """
     音声ファイルを文字起こしし、結果をCSVファイルに保存または既存のCSVを読み込み。
 
@@ -242,7 +288,7 @@ def audio_transcription2csv(audio_path, output_directory):
     """
     # ファイル名を適切に生成
     output_path = os.path.join(
-        output_directory, os.path.basename(audio_path).replace('.wav', '_transcription.csv')
+        output_directory, os.path.basename(audio_path).replace('.mp3', '.csv')
     )
 
     # CSVファイルが存在する場合、エンコーディングを検出して読み込む
@@ -269,7 +315,7 @@ def audio_transcription2csv(audio_path, output_directory):
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
     # 無音区間と文字起こしを行う
-    silences = transcriber.transcribe_segment(os.path.abspath(audio_path))
+    silences = transcriber.transcribe_segment(os.path.abspath(audio_path), audio_extract=extract)
     print("Detected silences:", silences)
 
     # データフレームに変換
@@ -387,7 +433,8 @@ if __name__ == "__main__":
     print("元配信音声を文字起こし中...")
     source_silences = audio_transcription2csv(
         source_audio,
-        output_directory="data/transcription/source"
+        output_directory="data/transcription/source",
+        extract=False
     )
     print(f"元配信文字起こし結果: {source_silences}")
 
