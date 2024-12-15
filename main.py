@@ -113,7 +113,7 @@ if __name__ == "__main__":
 
     # チャットデータのダウンロード
     csv_search_filename = f"urls_{current_time}.csv"
-    csv_filename = "data/ホロライブ　切り抜き_2024-11-16_18-26-28_videos_processed.csv"
+    csv_filename = "data/兎田ぺこら　切り抜き_2024-11-16_20-48-27_videos_processed.csv"
     search_process_df = search_csv_chat_download.list_original_urls(csv_filename)
     search_process_df.to_csv(csv_search_filename, index=False, encoding='utf-8-sig')
 
