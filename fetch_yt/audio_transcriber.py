@@ -28,6 +28,7 @@ class AudioTranscriber:
         Returns:
             list: List of silence intervals [{'from': start_time, 'to': end_time, 'suffix': 'cut'}].
         """
+        print(f"detect_silence: {audio_file}")
         try:
             # Load the Silero VAD model
             model, utils = torch.hub.load(
@@ -52,7 +53,7 @@ class AudioTranscriber:
                 threshold=threshold,
                 sampling_rate=sampling_rate
             )
-            print(f"Detected speech timestamps: {speech_timestamps}")
+            print(f"Detected speech timestamps: {len(speech_timestamps)}")
 
             if not speech_timestamps:
                 print(f"No speech detected in {audio_file}")
@@ -88,7 +89,7 @@ class AudioTranscriber:
             return []
 
     @staticmethod
-    def get_keep_blocks(silences, data_len, samplerate, padding_time=0.2):
+    def get_keep_blocks(silences, data_len, padding_time=0.2):
         """
         無音区間の外側を保持するブロックを計算。
 
@@ -124,7 +125,7 @@ class AudioTranscriber:
         except Exception as e:
             print(f"Error in get_keep_blocks: {e}")
             print(f"Input silences: {silences}")
-            print(f"Data length: {data_len}, Samplerate: {samplerate}")
+            print(f"Data length: {data_len}")
             print(traceback.format_exc())
             return []
 
@@ -142,7 +143,7 @@ class AudioTranscriber:
             list: 保存されたセグメントファイルの絶対パスのリスト。
         """
         # 修正された出力ディレクトリの設定
-        output_dir = os.path.join("content", "audio_segments_{}".format(int(time.time())))
+        output_dir = os.path.join("../content", "audio_segments_{}".format(int(time.time())))
 
         # 出力ディレクトリが存在しない場合に作成
         os.makedirs(output_dir, exist_ok=True)
@@ -309,6 +310,7 @@ class AudioTranscriber:
 
         # audio_path = 'data/sound/clipping_audio_wav/htdemucs/7-1fNxXj_xM/vocals.wav'
         # オーディオデータを読み込む
+        print("Loading audio...")
         audio = AudioSegment.from_file(audio_path)
 
         silences = self.SileroVAD_detect_silence(audio_path)
@@ -320,11 +322,10 @@ class AudioTranscriber:
         keep_blocks = self.get_keep_blocks(
             silences=silences,
             data_len=len(audio.get_array_of_samples()),
-            samplerate=samplerate,
             padding_time=0.2
         )
 
-        print(f"Keep blocks: {keep_blocks}")
+        print(f"Keep blocks: {len(keep_blocks)}")
 
         # 音声セグメントを保存
         segment_files = self.save_audio_segments(audio, keep_blocks, samplerate=samplerate)
@@ -340,15 +341,15 @@ class AudioTranscriber:
 if __name__ == "__main__":
     try:
         transcriber = AudioTranscriber()
-        audio_path = './data/sound/clipping_audio_wav/7-1fNxXj_xM.wav'
+        audio_path = '../data/sound/clipping_audio_wav/7-1fNxXj_xM.wav'
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
         # 無音区間と文字起こしを行う
         silences = transcriber.transcribe_segment(audio_path)
-        print("Detected silences:")
-        for silence in silences:
-            print(silence)
+        # print("Detected silences:")
+        # for silence in silences:
+        #     print(silence)
     except Exception as e:
         print(f"An error occurred: {e}")
         print(traceback.format_exc())

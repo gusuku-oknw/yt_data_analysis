@@ -1,17 +1,14 @@
 from datetime import datetime
 import os
-from tqdm import tqdm
 
 import pandas as pd
-import data_collection
 import search_csv_chat_download
 from audio_transcription_comparator import download_yt_sound
 from audio_transcription_comparator import audio_transcription2csv
 from audio_transcription_comparator import compare_segments
 from analyze_chat_emotions import main_emotion_analysis
-from chat_download import get_video_id_from_url, remove_query_params, chat_download_csv
-from search_csv_chat_download import list_original_urls
-from data_collection import search_main, get_popular_main
+from chat_download import get_video_id_from_url, remove_query_params
+
 
 def download_and_transcribe(source_url, clipping_url):
     """
@@ -26,7 +23,7 @@ def download_and_transcribe(source_url, clipping_url):
     """
     try:
         # ディレクトリ構成の設定
-        data_dir = "data"
+        data_dir = "../data"
         audio_dir = os.path.join(data_dir, "audio")
         transcription_dir = os.path.join(data_dir, "transcription")
         comparison_dir = os.path.join(data_dir, "comparison")
@@ -113,7 +110,7 @@ if __name__ == "__main__":
 
     # チャットデータのダウンロード
     csv_search_filename = f"urls_{current_time}.csv"
-    csv_filename = "data/兎田ぺこら　切り抜き_2024-11-16_20-48-27_videos_processed.csv"
+    csv_filename = "../data/博衣こより　切り抜き_2024-11-16_20-48-51_videos_processed.csv"
     search_process_df = search_csv_chat_download.list_original_urls(csv_filename)
     search_process_df.to_csv(csv_search_filename, index=False, encoding='utf-8-sig')
 
@@ -127,7 +124,7 @@ if __name__ == "__main__":
     # 結果を記録するリスト
     results = []
     analysis_files = []
-    progress_file = "processing_progress.csv"
+    progress_file = "../processing_progress.csv"
 
     # 初期化
     if not os.path.exists(progress_file):
@@ -136,10 +133,10 @@ if __name__ == "__main__":
         )
 
     for i, (source, clip, file_path) in enumerate(zip(source_url, clipping_url, source_file), start=1):
-        print(f"\n=== {i} 番目の動画の処理を開始します ===")
+        print(f"\n=== {i}/{len(source_url)} 番目の動画の処理を開始します ===")
         print(f"元配信URL: {source}")
         print(f"切り抜きURL: {clip}")
-        matches_filename = f"data/matches/{get_video_id_from_url(remove_query_params(source))}_{get_video_id_from_url(remove_query_params(clip))}.csv"
+        matches_filename = f"../data/matches/{get_video_id_from_url(remove_query_params(source))}_{get_video_id_from_url(remove_query_params(clip))}.csv"
         print(f"matches_filename: {matches_filename}")
         # すでに処理済みの場合はスキップ# ファイルが存在するか確認
         if os.path.exists(matches_filename):
@@ -170,7 +167,7 @@ if __name__ == "__main__":
                 plot_results=False,  # プロットを表示しない
                 plot_save=None,
                 # プロット画像を保存
-                save_dir="data/emotion"
+                save_dir="../data/emotion"
             )
             analysis_files.append(analysis_result)
             print(f"{i} 番目の動画の感情分析が完了しました。")

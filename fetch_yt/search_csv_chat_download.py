@@ -1,4 +1,3 @@
-import time
 import pandas as pd
 import chat_download
 import re
@@ -67,7 +66,7 @@ def filter_and_correct_urls(url_list):
     return valid_urls
 
 # csvファイルtoチャットダウンロード
-def list_original_urls(csv_file, base_directory="data/chat_messages", url_column="Original URL", video_url_column="Video URL", delete_multiple=False):
+def list_original_urls(csv_file, base_directory="../data/chat_messages", url_column="Original URL", video_url_column="Video URL", delete_multiple=False):
     """
     指定されたCSVファイルのオリジナルURLカラムからURLを取得し、チャットをダウンロードする。
 
@@ -186,13 +185,13 @@ if __name__ == "__main__":
     import pandas as pd
 
     # CSVファイルのパスを指定
-    csv_file = "./data/test_processed.csv"
+    csv_file = "../data/test_processed.csv"
 
     # 処理の実行と結果の保存
     result_df = list_original_urls(csv_file, delete_multiple=True)
 
     # 結果をCSVに保存
-    output_csv = "./data/download_results.csv"
+    output_csv = "../data/download_results.csv"
     result_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
 
     print(f"ダウンロード結果を {output_csv} に保存しました。")

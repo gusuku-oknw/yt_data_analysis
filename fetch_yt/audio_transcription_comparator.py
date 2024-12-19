@@ -166,25 +166,10 @@ def compare_segments(clipping_segments, source_segments, initial_threshold=0.8, 
 
         unmatched = still_unmatched
 
-    # CSVに保存
-    if matches:
-        matches_df = pd.DataFrame(matches)
-        matches_df.to_csv('matches.csv', index=False, encoding="utf-8-sig")
-        print("Matches saved to 'matches.csv'")
-    else:
-        print("No matches to save.")
-
-    if unmatched:
-        unmatched_df = pd.DataFrame(unmatched)
-        unmatched_df.to_csv('unmatched.csv', index=False, encoding="utf-8-sig")
-        print("Unmatched segments saved to 'unmatched.csv'")
-    else:
-        print("No unmatched segments to save.")
-
     return matches, unmatched
 
 # YouTube動画または音声をダウンロード
-def download_yt_sound(url, output_dir="data/sound", audio_only=True):
+def download_yt_sound(url, output_dir="../data/sound", audio_only=True):
     """
     YouTube動画または音声をダウンロード。
 
@@ -426,14 +411,14 @@ if __name__ == "__main__":
     # # print(clipping_audio)
     # test = "./data"
 
-    source_audio = "data/sound/source_audio/pnHdRQbR2zs.mp3"
-    clipping_audio = "data/sound/clipping_audio/-bRcKCM5_3E.mp3"
+    source_audio = "../data/sound/source_audio/pnHdRQbR2zs.mp3"
+    clipping_audio = "../data/sound/clipping_audio/-bRcKCM5_3E.mp3"
 
     # ステップ2: Distil-Whisperで文字起こし
     print("元配信音声を文字起こし中...")
     source_silences = audio_transcription2csv(
         source_audio,
-        output_directory="data/transcription/source",
+        output_directory="../data/transcription/source",
         extract=False
     )
     print(f"元配信文字起こし結果: {source_silences}")
@@ -442,12 +427,12 @@ if __name__ == "__main__":
     print("切り抜き音声を文字起こし中...")
     clipping_silences = audio_transcription2csv(
         clipping_audio,
-        output_directory="data/transcription/clipping"
+        output_directory="../data/transcription/clipping"
     )
     print(f"切り抜き文字起こし結果: {clipping_silences}")
 
     # ステップ3: テキストの比較
-    root_directory = 'data/compare_CSV'
+    root_directory = '../data/compare_CSV'
     print(len(source_silences), len(clipping_silences))
     matches, unmatched = compare_segments(clipping_silences, source_silences)
 

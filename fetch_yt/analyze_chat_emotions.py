@@ -54,7 +54,7 @@ checkpoint_sentiment = 'christian-phu/bert-finetuned-japanese-sentiment'
 tokenizer_sentiment = AutoTokenizer.from_pretrained(checkpoint_sentiment)
 model_sentiment = AutoModelForSequenceClassification.from_pretrained(checkpoint_sentiment).to(device)
 
-checkpoint_weime = './saved_model'
+checkpoint_weime = '../saved_model'
 tokenizer_weime = AutoTokenizer.from_pretrained(checkpoint_weime)
 model_weime = AutoModelForSequenceClassification.from_pretrained(checkpoint_weime).to(device)
 
@@ -204,7 +204,7 @@ def plot_emotions(df, analysis_methods=["sentiment", "weime", "mlask"], save_pat
 
 
 # メイン処理
-def main_emotion_analysis(file_path, analysis_methods=["sentiment"], plot_results=True, plot_save=None, save_dir="data/emotion"):
+def main_emotion_analysis(file_path, analysis_methods=["sentiment"], plot_results=True, plot_save=None, save_dir="../data/emotion"):
     """
     メイン処理関数:
     1. データ読み込み・前処理
@@ -292,13 +292,13 @@ def main_emotion_analysis(file_path, analysis_methods=["sentiment"], plot_result
     return df_existing
 
 if __name__ == "__main__":
-    file_path = 'data/chat_messages/4agZGzQLfF8.csv'
+    file_path = '../data/chat_messages/4agZGzQLfF8.csv'
     print(os.path.basename(file_path))
     # 複数の感情分析を実行
     main_emotion_analysis(
         file_path=file_path,
         analysis_methods=["sentiment", "weime", "mlask"],
         plot_results=False,  # プロットを表示しない
-        plot_save=f"data/images/emotion_plot_{os.path.basename(file_path)}.png",  # プロット画像を保存
-        save_dir="data/emotion"
+        plot_save=f"../data/images/emotion_plot_{os.path.basename(file_path)}.png",  # プロット画像を保存
+        save_dir="../data/emotion"
     )
