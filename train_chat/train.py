@@ -5,14 +5,14 @@ import yaml
 
 def main(config_path):
     # 設定ファイルを読み込む
-    with open(config_path, 'r') as f:
+    with open(config_path, 'r', encoding='utf-8') as f:  # ここでエンコーディングを指定
         config = yaml.safe_load(f)
 
     # ランダムシードの設定
-    set_seed(config['seed'])
+    set_seed(config['training']['seed'])
 
     # データの読み込み
-    train_data, val_data = load_data(config['data_path'])
+    train_data, val_data = load_data(config['train_dir'])  # train_dirを渡す
 
     # モデルの初期化
     model = ChatModel(config['model'])

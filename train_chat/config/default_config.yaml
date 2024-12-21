@@ -1,12 +1,15 @@
 # データ設定
-train_dir:                # 学習データを格納する複数ディレクトリのリスト
-  - "../../data/chat_messages/"
-  - "../../data/comparison/matches/"
-  - "../../data/emotion/"
-  - "../../data/transcription/clipping/"
-  - "../../data/transcription/source/"
+data_dirs:
+  chat_messages: "../data/chat_messages"
+  transcription_source: "../data/transcription/source"
+  transcription_clipping: "../data/transcription/clipping"
+  comparison_matches: "../data/comparison/matches"
+  emotion: "../data/emotion"
+similarity_threshold: 0.75
 
-output_path: "../models/chat_model.pth"  # モデルの保存先
+train_files: "../data/train_data.csv"
+test_files: "../data/test_data.csv"
+
 
 # モデル設定
 model:
