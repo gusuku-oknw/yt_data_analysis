@@ -1,10 +1,9 @@
 # データ設定
 data_dirs:
-  chat_messages: "../data/chat_messages"
-  transcription_source: "../data/transcription/source"
-  transcription_clipping: "../data/transcription/clipping"
-  comparison_matches: "../data/comparison/matches"
-  emotion: "../data/emotion"
+  transcription_source: "../data/transcription/source/"
+  transcription_clipping: "../data/transcription/clipping/"
+  comparison_matches: "../data/comparison/matches/"
+  emotion: "../data/emotion/"
 similarity_threshold: 0.75
 
 train_files: "../data/train_data.csv"
