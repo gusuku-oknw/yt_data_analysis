@@ -1,0 +1,32 @@
+# データ設定
+train_dir:                # 学習データを格納する複数ディレクトリのリスト
+  - "../../data/chat_messages/"
+  - "../../data/comparison/matches/"
+  - "../../data/emotion/"
+  - "../../data/transcription/clipping/"
+  - "../../data/transcription/source/"
+
+output_path: "../models/chat_model.pth"  # モデルの保存先
+
+# モデル設定
+model:
+  vocab_size: 30522          # ボキャブラリのサイズ（例: BERTのトークナイザー用）
+  embedding_dim: 128         # 埋め込み次元
+  hidden_dim: 256            # 隠れ層の次元
+  output_dim: 2              # 出力次元（例: クラス数）
+
+# 学習設定
+training:
+  batch_size: 32             # バッチサイズ
+  num_epochs: 10             # エポック数
+  learning_rate: 0.001       # 学習率
+  seed: 42                   # 再現性のためのランダムシード
+
+# 評価設定
+evaluation:
+  batch_size: 32             # 評価時のバッチサイズ
+
+# その他
+logging:
+  level: "INFO"              # ログの出力レベル
+  save_interval: 1           # モデルを保存する間隔（エポック単位）
