@@ -5,6 +5,7 @@ from torchaudio.transforms import MFCC
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor
 
 class AudioComparator:
     def __init__(self, sampling_rate=16000, n_mfcc=13):
@@ -84,6 +85,28 @@ class AudioComparator:
         mfcc_1d = mfcc.mean(dim=-1).squeeze(0).cpu().numpy()
         return mfcc_1d
 
+    def adjust_clipping_blocks(self, clipping_blocks, source_blocks):
+        """
+        ClippingブロックをSourceブロックに合わせて再分割または統合。
+        """
+        adjusted_blocks = []
+        source_duration = sum(block["to"] - block["from"] for block in source_blocks)
+        clipping_duration = sum(block["to"] - block["from"] for block in clipping_blocks)
+
+        # ブロックサイズが大きく異なる場合に調整
+        if clipping_duration > source_duration:
+            ratio = clipping_duration / source_duration
+            for block in clipping_blocks:
+                adjusted_duration = (block["to"] - block["from"]) / ratio
+                adjusted_blocks.append({
+                    "from": block["from"],
+                    "to": block["from"] + adjusted_duration
+                })
+        else:
+            adjusted_blocks = clipping_blocks
+
+        return adjusted_blocks
+
     def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=100, threshold_increment=50):
         """
         切り抜き動画を基準に、元動画と一致する部分を探索。
@@ -94,27 +117,36 @@ class AudioComparator:
         current_threshold = initial_threshold
         source_index = 0  # 元動画の現在位置
 
+        # Clippingブロックを調整
+        clipping_blocks = self.adjust_clipping_blocks(clipping_blocks, source_blocks)
+
         # キャッシュを利用してMFCC計算を最小化
         source_mfcc_cache = {}
         clip_mfcc_cache = {}
         dtw_cache = {}
 
-        for j, clip_block in tqdm(enumerate(clipping_blocks), total=len(clipping_blocks), mininterval=0.5):
+        def compute_clip_mfcc(j, clip_block):
             if j not in clip_mfcc_cache:
                 clip_mfcc_cache[j] = self.extract_mfcc(
                     clipping_audio, clip_block["from"], clip_block["to"]
                 )
-            clip_mfcc = clip_mfcc_cache[j]
+            return clip_mfcc_cache[j]
 
+        def compute_source_mfcc(i, source_block):
+            if i not in source_mfcc_cache:
+                source_mfcc_cache[i] = self.extract_mfcc(
+                    source_audio, source_block["from"], source_block["to"]
+                )
+            return source_mfcc_cache[i]
+
+        def process_block(j, clip_block):
+            nonlocal source_index, current_threshold
+            clip_mfcc = compute_clip_mfcc(j, clip_block)
             match_found = False
 
             while not match_found:
                 for i in range(source_index, len(source_blocks)):
-                    if i not in source_mfcc_cache:
-                        source_mfcc_cache[i] = self.extract_mfcc(
-                            source_audio, source_blocks[i]["from"], source_blocks[i]["to"]
-                        )
-                    source_mfcc = source_mfcc_cache[i]
+                    source_mfcc = compute_source_mfcc(i, source_blocks[i])
 
                     # fastdtwの結果をキャッシュ
                     dtw_key = (j, i)
@@ -142,11 +174,8 @@ class AudioComparator:
                         print(f"No match found for clip block {j} after raising threshold to {current_threshold}")
                         break
 
-            # 次のブロックに進む前にキャッシュを削減
-            if len(source_mfcc_cache) > 100:  # キャッシュサイズ制限
-                source_mfcc_cache = {k: v for k, v in list(source_mfcc_cache.items())[-50:]}
-            if len(dtw_cache) > 1000:  # DTWキャッシュサイズ制限
-                dtw_cache = {k: v for k, v in list(dtw_cache.items())[-250:]}
+        with ThreadPoolExecutor() as executor:
+            list(tqdm(executor.map(lambda j: process_block(j, clipping_blocks[j]), range(len(clipping_blocks))), total=len(clipping_blocks), mininterval=0.5))
 
         # 結果としてstartとendだけを出力
         return {
@@ -177,6 +206,6 @@ if __name__ == "__main__":
 
     # 一致結果を出力
     for match in result["matches"]:
-        print(f"Source: {match['source']}, Clip: {match['clip']}")
+        print(f"Source: {match['source']}, Clip: {match['clip']}\n")
 
     print(f"Final threshold used: {result['final_threshold']}")
