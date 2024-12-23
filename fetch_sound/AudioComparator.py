@@ -97,8 +97,9 @@ class AudioComparator:
         # キャッシュを利用してMFCC計算を最小化
         source_mfcc_cache = {}
         clip_mfcc_cache = {}
+        dtw_cache = {}
 
-        for j, clip_block in tqdm(enumerate(clipping_blocks), total=len(clipping_blocks)):
+        for j, clip_block in tqdm(enumerate(clipping_blocks), total=len(clipping_blocks), mininterval=0.5):
             if j not in clip_mfcc_cache:
                 clip_mfcc_cache[j] = self.extract_mfcc(
                     clipping_audio, clip_block["from"], clip_block["to"]
@@ -115,8 +116,11 @@ class AudioComparator:
                         )
                     source_mfcc = source_mfcc_cache[i]
 
-                    # fastdtwに1次元ベクトルを渡す
-                    distance, _ = fastdtw(clip_mfcc, source_mfcc, dist=euclidean)
+                    # fastdtwの結果をキャッシュ
+                    dtw_key = (j, i)
+                    if dtw_key not in dtw_cache:
+                        dtw_cache[dtw_key] = fastdtw(clip_mfcc, source_mfcc, dist=euclidean)[0]
+                    distance = dtw_cache[dtw_key]
 
                     if distance < current_threshold:  # 閾値を使用
                         matches.append({
@@ -141,6 +145,8 @@ class AudioComparator:
             # 次のブロックに進む前にキャッシュを削減
             if len(source_mfcc_cache) > 100:  # キャッシュサイズ制限
                 source_mfcc_cache = {k: v for k, v in list(source_mfcc_cache.items())[-50:]}
+            if len(dtw_cache) > 1000:  # DTWキャッシュサイズ制限
+                dtw_cache = {k: v for k, v in list(dtw_cache.items())[-250:]}
 
         # 結果としてstartとendだけを出力
         return {
@@ -153,7 +159,6 @@ class AudioComparator:
             ],
             "final_threshold": current_threshold  # 最終的に使用された閾値を返す
         }
-
 
 if __name__ == "__main__":
     # ファイルパスの設定
