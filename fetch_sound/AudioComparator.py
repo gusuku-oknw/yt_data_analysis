@@ -123,20 +123,21 @@ class AudioComparator:
         ]
 
 
-# ファイルパスの設定
-source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
-clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
+if __name__ == "__main__":
+    # ファイルパスの設定
+    source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
+    clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
 
-# AudioComparatorのインスタンス作成
-comparator = AudioComparator()
+    # AudioComparatorのインスタンス作成
+    comparator = AudioComparator()
 
-# VADを用いた音声区切りの取得
-source_blocks = comparator.SileroVAD_detect_silence(source_audio)
-clipping_blocks = comparator.SileroVAD_detect_silence(clipping_audio)
+    # VADを用いた音声区切りの取得
+    source_blocks = comparator.SileroVAD_detect_silence(source_audio)
+    clipping_blocks = comparator.SileroVAD_detect_silence(clipping_audio)
 
-# ブロック間の一致を確認
-matches = comparator.compare_audio_blocks(source_audio, clipping_audio, source_blocks, clipping_blocks)
+    # ブロック間の一致を確認
+    matches = comparator.compare_audio_blocks(source_audio, clipping_audio, source_blocks, clipping_blocks)
 
-# 一致結果を出力
-for match in matches:
-    print(f"Source: {match['source']}, Clip: {match['clip']}")
+    # 一致結果を出力
+    for match in matches:
+        print(f"Source: {match['source']}, Clip: {match['clip']}")
