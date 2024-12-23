@@ -25,7 +25,7 @@ if __name__ == "__main__":
 
     # チャットデータのダウンロード
     csv_search_filename = f"../urls_{current_time}.csv"
-    csv_filename = "../data/博衣こより　切り抜き_2024-11-16_20-48-51_videos_processed.csv"
+    csv_filename = "../data/葛葉　切り抜き_2024-11-16_20-48-12_videos_processed.csv"
     search_process_df = list_original_urls(csv_filename)
     search_process_df.to_csv(csv_search_filename, index=False, encoding='utf-8-sig')
 
@@ -33,8 +33,8 @@ if __name__ == "__main__":
     source_url = search_process_df["Original URL"]
     clipping_url = search_process_df["Video URL"]
     source_file = search_process_df["File Path"]
-    print(f"元配信URL: {source_url}")
-    print(f"切り抜きURL: {clipping_url}")
+    print(f"元配信URL:\n {source_url}")
+    print(f"切り抜きURL:\n {clipping_url}")
 
     # 結果を記録するリスト
     results = []

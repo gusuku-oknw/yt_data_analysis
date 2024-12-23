@@ -66,7 +66,9 @@ def filter_and_correct_urls(url_list):
     return valid_urls
 
 # csvファイルtoチャットダウンロード
-def list_original_urls(csv_file, base_directory="../data/chat_messages", url_column="Original URL", video_url_column="Video URL", delete_multiple=False):
+def list_original_urls(csv_file, base_directory="../data/chat_messages", url_column="Original URL", video_url_column="Video URL",
+                       delete_multiple=False
+                       ):
     """
     指定されたCSVファイルのオリジナルURLカラムからURLを取得し、チャットをダウンロードする。
 

@@ -131,8 +131,12 @@ def process_all_videos(config_path):
     combined_data = pd.concat(all_data, ignore_index=True)
     combined_data = combined_data.sort_values(by=["source_video_id", "source_start", "source_end", "clip_start", "clip_end"], ignore_index=True)
 
-    # Train/Test分割
-    train_data, test_data = train_test_split(combined_data, test_size=0.2, random_state=42)
+    # Train/Test分割をVideo ID単位で実施
+    video_ids = combined_data["source_video_id"].unique()
+    train_ids, test_ids = train_test_split(video_ids, test_size=0.2, random_state=42)
+
+    train_data = combined_data[combined_data["source_video_id"].isin(train_ids)].reset_index(drop=True)
+    test_data = combined_data[combined_data["source_video_id"].isin(test_ids)].reset_index(drop=True)
 
     # スコアの計算
     y_train = train_data["is_match"]
