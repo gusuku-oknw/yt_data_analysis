@@ -84,43 +84,75 @@ class AudioComparator:
         mfcc_1d = mfcc.mean(dim=-1).squeeze(0).cpu().numpy()
         return mfcc_1d
 
-    def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks):
+    def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=100, threshold_increment=50):
         """
         切り抜き動画を基準に、元動画と一致する部分を探索。
+        閾値を動的に増加させながら一致箇所を探します。
+        一度一致したら次のブロックから探索を開始します。
         """
         matches = []
+        current_threshold = initial_threshold
         source_index = 0  # 元動画の現在位置
-        for j, clip_block in tqdm(enumerate(clipping_blocks), total=len(clipping_blocks)):
-            clip_mfcc = self.extract_mfcc(
-                clipping_audio, clip_block["from"], clip_block["to"]
-            )
-            # 逐次的に一致探索
-            for i in range(source_index, len(source_blocks)):
-                source_block = source_blocks[i]
-                source_mfcc = self.extract_mfcc(
-                    source_audio, source_block["from"], source_block["to"]
-                )
-                # fastdtwに1次元ベクトルを渡す
-                distance, _ = fastdtw(clip_mfcc, source_mfcc, dist=euclidean)
 
-                if distance < 100:  # 閾値を調整
-                    matches.append({
-                        "clip_start": clip_block["from"],  # 切り抜き動画
-                        "clip_end": clip_block["to"],
-                        "source_start": source_block["from"],  # 元動画
-                        "source_end": source_block["to"]
-                    })
-                    source_index = i + 1  # 次の比較を現在の位置から開始
-                    break  # 一度一致したら次の切り抜きブロックへ
+        # キャッシュを利用してMFCC計算を最小化
+        source_mfcc_cache = {}
+        clip_mfcc_cache = {}
+
+        for j, clip_block in tqdm(enumerate(clipping_blocks), total=len(clipping_blocks)):
+            if j not in clip_mfcc_cache:
+                clip_mfcc_cache[j] = self.extract_mfcc(
+                    clipping_audio, clip_block["from"], clip_block["to"]
+                )
+            clip_mfcc = clip_mfcc_cache[j]
+
+            match_found = False
+
+            while not match_found:
+                for i in range(source_index, len(source_blocks)):
+                    if i not in source_mfcc_cache:
+                        source_mfcc_cache[i] = self.extract_mfcc(
+                            source_audio, source_blocks[i]["from"], source_blocks[i]["to"]
+                        )
+                    source_mfcc = source_mfcc_cache[i]
+
+                    # fastdtwに1次元ベクトルを渡す
+                    distance, _ = fastdtw(clip_mfcc, source_mfcc, dist=euclidean)
+
+                    if distance < current_threshold:  # 閾値を使用
+                        matches.append({
+                            "clip_start": clip_block["from"],  # 切り抜き動画
+                            "clip_end": clip_block["to"],
+                            "source_start": source_blocks[i]["from"],  # 元動画
+                            "source_end": source_blocks[i]["to"]
+                        })
+                        source_index = i + 1  # 次の比較を現在の位置から開始
+                        match_found = True
+                        break  # 一度一致したら次の切り抜きブロックへ
+
+                if not match_found:
+                    # 閾値を増加させる
+                    current_threshold += threshold_increment
+
+                    # 閾値が十分高い場合は一致なしと見なす
+                    if current_threshold > 1000:  # 例として最大閾値を1000と設定
+                        print(f"No match found for clip block {j} after raising threshold to {current_threshold}")
+                        break
+
+            # 次のブロックに進む前にキャッシュを削減
+            if len(source_mfcc_cache) > 100:  # キャッシュサイズ制限
+                source_mfcc_cache = {k: v for k, v in list(source_mfcc_cache.items())[-50:]}
 
         # 結果としてstartとendだけを出力
-        return [
-            {
-                "clip": (match["clip_start"], match["clip_end"]),
-                "source": (match["source_start"], match["source_end"]),
-            }
-            for match in matches
-        ]
+        return {
+            "matches": [
+                {
+                    "clip": (match["clip_start"], match["clip_end"]),
+                    "source": (match["source_start"], match["source_end"]),
+                }
+                for match in matches
+            ],
+            "final_threshold": current_threshold  # 最終的に使用された閾値を返す
+        }
 
 
 if __name__ == "__main__":
@@ -128,16 +160,18 @@ if __name__ == "__main__":
     source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
     clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
 
-    # AudioComparatorのインスタンス作成
-    comparator = AudioComparator()
+    # サンプリングレートを取得してAudioComparatorのインスタンス作成
+    comparator = AudioComparator(sampling_rate=torchaudio.info(source_audio).sample_rate)
 
     # VADを用いた音声区切りの取得
     source_blocks = comparator.SileroVAD_detect_silence(source_audio)
     clipping_blocks = comparator.SileroVAD_detect_silence(clipping_audio)
 
     # ブロック間の一致を確認
-    matches = comparator.compare_audio_blocks(source_audio, clipping_audio, source_blocks, clipping_blocks)
+    result = comparator.compare_audio_blocks(source_audio, clipping_audio, source_blocks, clipping_blocks)
 
     # 一致結果を出力
-    for match in matches:
+    for match in result["matches"]:
         print(f"Source: {match['source']}, Clip: {match['clip']}")
+
+    print(f"Final threshold used: {result['final_threshold']}")
