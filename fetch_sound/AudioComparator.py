@@ -5,6 +5,9 @@ from torchaudio.transforms import MFCC
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
 from tqdm import tqdm
+import numpy as np
+from transformers import pipeline
+import librosa
 
 class AudioComparator:
     def __init__(self, sampling_rate=16000, n_mfcc=13):
@@ -22,6 +25,19 @@ class AudioComparator:
             force_reload=False
         )
         self.get_speech_timestamps, self.save_audio, self.read_audio, _, _ = self.vad_utils
+
+        # Kotoba-Whisper model pipeline
+        self.kotoba_whisper_model_id = "kotoba-tech/kotoba-whisper-v1.0"
+        self.kotoba_whisper_torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        self.kotoba_whisper_device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.kotoba_whisper_model_kwargs = {"attn_implementation": "sdpa"} if torch.cuda.is_available() else {}
+        self.kotoba_whisper_pipe = pipeline(
+            "automatic-speech-recognition",
+            model=self.kotoba_whisper_model_id,
+            torch_dtype=self.kotoba_whisper_torch_dtype,
+            device=self.kotoba_whisper_device,
+            model_kwargs=self.kotoba_whisper_model_kwargs
+        )
 
     def SileroVAD_detect_silence(self, audio_file, threshold=0.5):
         """Detect silence in an audio file using Silero VAD."""
@@ -85,6 +101,99 @@ class AudioComparator:
         block_mfcc = full_mfcc[:, start_frame:end_frame]
         return block_mfcc.mean(dim=-1).cpu().numpy()
 
+    def kotoba_whisper(self, audio_file, max_segment_duration=30.0):
+        """
+        kotoba-Whisperを使用して音声を文字起こし。
+
+        Parameters:
+            audio_file (str): 入力音声ファイルのパス。
+            max_segment_duration (float): 最大セグメント長（秒）。
+
+        Returns:
+            str: 文字起こし結果。
+        """
+        generate_kwargs = {
+            "return_timestamps": True,
+            "language": "japanese"
+        }
+
+        audio, sampling_rate = librosa.load(audio_file, sr=self.sampling_rate)
+        total_duration = len(audio) / self.sampling_rate
+        segments = []
+
+        # 音声をセグメントに分割
+        for start in np.arange(0, total_duration, max_segment_duration):
+            end = min(start + max_segment_duration, total_duration)
+            start_sample = int(start * self.sampling_rate)
+            end_sample = int(end * self.sampling_rate)
+            segments.append(audio[start_sample:end_sample])
+
+        # 各セグメントを処理
+        transcriptions = []
+        for segment in segments:
+            audio_input = {"raw": segment, "sampling_rate": self.sampling_rate}
+            result = self.kotoba_whisper_pipe(audio_input, generate_kwargs=generate_kwargs)
+            transcriptions.append(result["text"])
+
+        # セグメントの文字起こしを結合
+        return " ".join(transcriptions)
+
+    def transcribe_blocks(self, audio_file, blocks):
+        """
+        Transcribe audio blocks using kotoba-whisper.
+
+        Parameters:
+            audio_file (str): Path to the audio file.
+            blocks (list): List of blocks with "from" and "to" times.
+
+        Returns:
+            list: List of transcribed text for each block.
+        """
+        transcriptions = []
+        audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
+        for block in tqdm(blocks, desc="Transcribing Blocks"):
+            start_sample = int(block["from"] * sr)
+            end_sample = int(block["to"] * sr)
+            block_audio = audio[start_sample:end_sample]
+
+            audio_input = {"raw": block_audio, "sampling_rate": sr}
+            result = self.kotoba_whisper_pipe(audio_input,
+                                              generate_kwargs={"return_timestamps": True, "language": "japanese"})
+            transcriptions.append(result["text"])
+
+        return transcriptions
+
+    def calculate_audio_statistics(self, audio_file, blocks):
+        """
+        Calculate audio statistics (average loudness and variance) for the entire audio and each block.
+
+        Parameters:
+            audio_file (str): Path to the audio file.
+            blocks (list): List of blocks with "from" and "to" times.
+
+        Returns:
+            dict: Average loudness of the entire audio and variance for each block.
+        """
+        audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
+        overall_mean = np.mean(np.abs(audio))
+
+        block_statistics = []
+        for block in blocks:
+            start_sample = int(block["from"] * sr)
+            end_sample = int(block["to"] * sr)
+            block_audio = audio[start_sample:end_sample]
+            block_variance = np.var(block_audio)
+            block_statistics.append({
+                "from": block["from"],
+                "to": block["to"],
+                "variance": block_variance
+            })
+
+        return {
+            "overall_mean": overall_mean,
+            "block_statistics": block_statistics
+        }
+
     def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=100, threshold_increment=50):
         """Compare audio blocks between source and clipping audio."""
         source_full_mfcc = self.compute_full_mfcc(source_audio)
@@ -142,6 +251,15 @@ if __name__ == "__main__":
 
     source_blocks = comparator.SileroVAD_detect_silence(source_audio)
     clipping_blocks = comparator.SileroVAD_detect_silence(clipping_audio)
+
+    transcriptions = comparator.transcribe_blocks(source_audio, source_blocks)
+    for i, transcription in enumerate(transcriptions):
+        print(f"Block {i + 1}: {transcription}")
+
+    audio_statistics = comparator.calculate_audio_statistics(source_audio, source_blocks)
+    print("Overall Mean Loudness:", audio_statistics["overall_mean"])
+    for block_stat in audio_statistics["block_statistics"]:
+        print(f"Block {block_stat['from']}-{block_stat['to']} Variance: {block_stat['variance']}")
 
     result = comparator.compare_audio_blocks(source_audio, clipping_audio, source_blocks, clipping_blocks)
 
