@@ -5,7 +5,6 @@ from torchaudio.transforms import MFCC
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
 from tqdm import tqdm
-from concurrent.futures import ThreadPoolExecutor
 
 class AudioComparator:
     def __init__(self, sampling_rate=16000, n_mfcc=13):
@@ -16,38 +15,30 @@ class AudioComparator:
             n_mfcc=n_mfcc
         ).to(self.device)
 
+        # Silero VAD model loading once
+        self.vad_model, self.vad_utils = torch.hub.load(
+            repo_or_dir='snakers4/silero-vad',
+            model='silero_vad',
+            force_reload=False
+        )
+        self.get_speech_timestamps, self.save_audio, self.read_audio, _, _ = self.vad_utils
+
     def SileroVAD_detect_silence(self, audio_file, threshold=0.5):
-        """
-        Silero VADを使って音声の区切り（静寂部分）を検出。
-        """
-        print(f"detect_silence: {audio_file}")
+        """Detect silence in an audio file using Silero VAD."""
         try:
-            # Silero VADモデルをロード
-            model, utils = torch.hub.load(
-                repo_or_dir='snakers4/silero-vad',
-                model='silero_vad',
-                force_reload=True
-            )
-
-            # ユーティリティ関数の取得
-            (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
-
-            # 音声ファイルを読み込み
             if not os.path.exists(audio_file):
                 raise FileNotFoundError(f"Audio file not found: {audio_file}")
 
-            audio_tensor = read_audio(audio_file, sampling_rate=self.sampling_rate)
+            audio_tensor = self.read_audio(audio_file, sampling_rate=self.sampling_rate)
 
-            # 音声セグメントを検出
-            speech_timestamps = get_speech_timestamps(
-                audio_tensor, model, threshold=threshold, sampling_rate=self.sampling_rate
+            speech_timestamps = self.get_speech_timestamps(
+                audio_tensor, self.vad_model, threshold=threshold, sampling_rate=self.sampling_rate
             )
 
             if not speech_timestamps:
                 print(f"No speech detected in {audio_file}")
                 return []
 
-            # 静寂区間の計算
             silences = []
             last_end = 0
             audio_length = audio_tensor.shape[-1]
@@ -72,112 +63,66 @@ class AudioComparator:
             print(f"An error occurred in SileroVAD_detect_silence: {e}")
             return []
 
-    @staticmethod
-    def extract_mfcc(audio_path, start, end, sr=16000, n_mfcc=13):
-        """指定された区間のMFCCを抽出（1次元に変換）。"""
-        y, _ = torchaudio.load(audio_path, frame_offset=int(start * sr), num_frames=int((end - start) * sr))
-        waveform = y.to("cuda" if torch.cuda.is_available() else "cpu")
-
-        # MFCCの計算
-        mfcc = torchaudio.transforms.MFCC(sample_rate=sr, n_mfcc=n_mfcc).to(waveform.device)(waveform)
-
-        # MFCCを2次元から1次元ベクトルに変換（時間軸方向の平均）
-        mfcc_1d = mfcc.mean(dim=-1).squeeze(0).cpu().numpy()
-        return mfcc_1d
-
-    def adjust_clipping_blocks(self, clipping_blocks, source_blocks):
-        """
-        ClippingブロックをSourceブロックに合わせて再分割または統合。
-        """
-        adjusted_blocks = []
-        source_duration = sum(block["to"] - block["from"] for block in source_blocks)
-        clipping_duration = sum(block["to"] - block["from"] for block in clipping_blocks)
-
-        # ブロックサイズが大きく異なる場合に調整
-        if clipping_duration > source_duration:
-            ratio = clipping_duration / source_duration
-            for block in clipping_blocks:
-                adjusted_duration = (block["to"] - block["from"]) / ratio
-                adjusted_blocks.append({
-                    "from": block["from"],
-                    "to": block["from"] + adjusted_duration
-                })
+    def compute_full_mfcc(self, audio_path):
+        """Compute MFCC for the entire audio file."""
+        waveform, file_sr = torchaudio.load(audio_path)
+        if file_sr != self.sampling_rate:
+            resampler = torchaudio.transforms.Resample(orig_freq=file_sr, new_freq=self.sampling_rate).to(self.device)
+            waveform = waveform.to(self.device)  # デバイスを統一
+            waveform = resampler(waveform)
         else:
-            adjusted_blocks = clipping_blocks
+            waveform = waveform.to(self.device)  # デバイスを統一
 
-        return adjusted_blocks
+        # MFCC計算
+        mfcc = self.mfcc_transform(waveform)
+        return mfcc.squeeze(0)
+
+    def extract_mfcc_block(self, full_mfcc, start, end):
+        """Extract MFCC for a specific time block."""
+        hop_length = 512  # Default hop length
+        start_frame = int(start * self.sampling_rate / hop_length)
+        end_frame = int(end * self.sampling_rate / hop_length)
+        block_mfcc = full_mfcc[:, start_frame:end_frame]
+        return block_mfcc.mean(dim=-1).cpu().numpy()
 
     def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=100, threshold_increment=50):
-        """
-        切り抜き動画を基準に、元動画と一致する部分を探索。
-        閾値を動的に増加させながら一致箇所を探します。
-        一度一致したら次のブロックから探索を開始します。
-        """
+        """Compare audio blocks between source and clipping audio."""
+        source_full_mfcc = self.compute_full_mfcc(source_audio)
+        clipping_full_mfcc = self.compute_full_mfcc(clipping_audio)
+
         matches = []
         current_threshold = initial_threshold
-        source_index = 0  # 元動画の現在位置
+        source_index = 0
 
-        # Clippingブロックを調整
-        clipping_blocks = self.adjust_clipping_blocks(clipping_blocks, source_blocks)
-
-        # キャッシュを利用してMFCC計算を最小化
-        source_mfcc_cache = {}
-        clip_mfcc_cache = {}
-        dtw_cache = {}
-
-        def compute_clip_mfcc(j, clip_block):
-            if j not in clip_mfcc_cache:
-                clip_mfcc_cache[j] = self.extract_mfcc(
-                    clipping_audio, clip_block["from"], clip_block["to"]
-                )
-            return clip_mfcc_cache[j]
-
-        def compute_source_mfcc(i, source_block):
-            if i not in source_mfcc_cache:
-                source_mfcc_cache[i] = self.extract_mfcc(
-                    source_audio, source_block["from"], source_block["to"]
-                )
-            return source_mfcc_cache[i]
-
-        def process_block(j, clip_block):
-            nonlocal source_index, current_threshold
-            clip_mfcc = compute_clip_mfcc(j, clip_block)
+        for j in tqdm(range(len(clipping_blocks)), desc="Processing Blocks"):
+            clip_block = clipping_blocks[j]
+            clip_mfcc = self.extract_mfcc_block(clipping_full_mfcc, clip_block["from"], clip_block["to"])
             match_found = False
 
             while not match_found:
                 for i in range(source_index, len(source_blocks)):
-                    source_mfcc = compute_source_mfcc(i, source_blocks[i])
+                    source_block = source_blocks[i]
+                    source_mfcc = self.extract_mfcc_block(source_full_mfcc, source_block["from"], source_block["to"])
 
-                    # fastdtwの結果をキャッシュ
-                    dtw_key = (j, i)
-                    if dtw_key not in dtw_cache:
-                        dtw_cache[dtw_key] = fastdtw(clip_mfcc, source_mfcc, dist=euclidean)[0]
-                    distance = dtw_cache[dtw_key]
+                    distance = fastdtw(clip_mfcc, source_mfcc, dist=euclidean)[0]
 
-                    if distance < current_threshold:  # 閾値を使用
+                    if distance < current_threshold:
                         matches.append({
-                            "clip_start": clip_block["from"],  # 切り抜き動画
+                            "clip_start": clip_block["from"],
                             "clip_end": clip_block["to"],
-                            "source_start": source_blocks[i]["from"],  # 元動画
-                            "source_end": source_blocks[i]["to"]
+                            "source_start": source_block["from"],
+                            "source_end": source_block["to"]
                         })
-                        source_index = i + 1  # 次の比較を現在の位置から開始
+                        source_index = i + 1
                         match_found = True
-                        break  # 一度一致したら次の切り抜きブロックへ
+                        break
 
                 if not match_found:
-                    # 閾値を増加させる
                     current_threshold += threshold_increment
-
-                    # 閾値が十分高い場合は一致なしと見なす
-                    if current_threshold > 1000:  # 例として最大閾値を1000と設定
+                    if current_threshold > 1000:
                         print(f"No match found for clip block {j} after raising threshold to {current_threshold}")
                         break
 
-        with ThreadPoolExecutor() as executor:
-            list(tqdm(executor.map(lambda j: process_block(j, clipping_blocks[j]), range(len(clipping_blocks))), total=len(clipping_blocks), mininterval=0.5))
-
-        # 結果としてstartとendだけを出力
         return {
             "matches": [
                 {
@@ -186,26 +131,21 @@ class AudioComparator:
                 }
                 for match in matches
             ],
-            "final_threshold": current_threshold  # 最終的に使用された閾値を返す
+            "final_threshold": current_threshold
         }
 
 if __name__ == "__main__":
-    # ファイルパスの設定
     source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
     clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
 
-    # サンプリングレートを取得してAudioComparatorのインスタンス作成
-    comparator = AudioComparator(sampling_rate=torchaudio.info(source_audio).sample_rate)
+    comparator = AudioComparator()
 
-    # VADを用いた音声区切りの取得
     source_blocks = comparator.SileroVAD_detect_silence(source_audio)
     clipping_blocks = comparator.SileroVAD_detect_silence(clipping_audio)
 
-    # ブロック間の一致を確認
     result = comparator.compare_audio_blocks(source_audio, clipping_audio, source_blocks, clipping_blocks)
 
-    # 一致結果を出力
     for match in result["matches"]:
-        print(f"Source: {match['source']}, Clip: {match['clip']}\n")
+        print(f"Source: {match['source']}, Clip: {match['clip']}")
 
     print(f"Final threshold used: {result['final_threshold']}")
