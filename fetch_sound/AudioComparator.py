@@ -86,38 +86,38 @@ class AudioComparator:
 
     def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks):
         """
-        区切られたブロック同士で一致を確認し、逐次的に探索を最適化。
+        切り抜き動画を基準に、元動画と一致する部分を探索。
         """
         matches = []
-        clip_index = 0  # 切り抜き動画の現在位置
-        for i, source_block in tqdm(enumerate(source_blocks), total=len(source_blocks)):
-            source_mfcc = self.extract_mfcc(
-                source_audio, source_block["from"], source_block["to"]
+        source_index = 0  # 元動画の現在位置
+        for j, clip_block in tqdm(enumerate(clipping_blocks), total=len(clipping_blocks)):
+            clip_mfcc = self.extract_mfcc(
+                clipping_audio, clip_block["from"], clip_block["to"]
             )
             # 逐次的に一致探索
-            for j in range(clip_index, len(clipping_blocks)):
-                clip_block = clipping_blocks[j]
-                clip_mfcc = self.extract_mfcc(
-                    clipping_audio, clip_block["from"], clip_block["to"]
+            for i in range(source_index, len(source_blocks)):
+                source_block = source_blocks[i]
+                source_mfcc = self.extract_mfcc(
+                    source_audio, source_block["from"], source_block["to"]
                 )
                 # fastdtwに1次元ベクトルを渡す
-                distance, _ = fastdtw(source_mfcc, clip_mfcc, dist=euclidean)
+                distance, _ = fastdtw(clip_mfcc, source_mfcc, dist=euclidean)
 
                 if distance < 100:  # 閾値を調整
                     matches.append({
-                        "source_start": source_block["from"],
-                        "source_end": source_block["to"],
-                        "clip_start": clip_block["from"],
-                        "clip_end": clip_block["to"]
+                        "clip_start": clip_block["from"],  # 切り抜き動画
+                        "clip_end": clip_block["to"],
+                        "source_start": source_block["from"],  # 元動画
+                        "source_end": source_block["to"]
                     })
-                    clip_index = j + 1  # 次の比較を現在の位置から開始
-                    break  # 一度一致したら次のソースブロックへ
+                    source_index = i + 1  # 次の比較を現在の位置から開始
+                    break  # 一度一致したら次の切り抜きブロックへ
 
         # 結果としてstartとendだけを出力
         return [
             {
-                "source": (match["source_start"], match["source_end"]),
                 "clip": (match["clip_start"], match["clip_end"]),
+                "source": (match["source_start"], match["source_end"]),
             }
             for match in matches
         ]
