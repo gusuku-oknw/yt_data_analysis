@@ -133,11 +133,6 @@ class AudioComparator:
             if not segments:
                 raise RuntimeError("No valid segments were processed for MFCC computation.")
 
-            # Debug: Log all segment sizes before padding
-            logging.info("--- Segment Sizes Before Padding ---")
-            for idx, segment in enumerate(segments):
-                logging.info(f"Segment {idx}: {segment.size()}")
-
             # Determine the maximum length
             max_length = max(segment.size(1) for segment in segments)
 
@@ -146,14 +141,6 @@ class AudioComparator:
             for idx, segment in enumerate(segments):
                 padded_segment = torch.nn.functional.pad(segment, (0, max_length - segment.size(1)))
                 padded_segments.append(padded_segment)
-
-            # Verify segment sizes after padding
-            logging.info("--- Segment Sizes After Padding ---")
-            for idx, segment in enumerate(padded_segments):
-                logging.info(f"Segment {idx}: {segment.size()}")
-                if segment.size(1) != max_length:
-                    logging.error(f"Segment {idx} has incorrect size after padding: {segment.size(1)}")
-                    raise RuntimeError(f"Padding failed for segment {idx}.")
 
             # Concatenate all padded segments along the time axis
             full_mfcc = torch.cat(padded_segments, dim=2)
@@ -285,7 +272,7 @@ class AudioComparator:
                     "to": block["to"],
                     "variance": block_variance
                 })
-                logging.info(f"ブロック {block['from']} - {block['to']} の分散: {block_variance}")
+                # logging.info(f"ブロック {block['from']} - {block['to']} の分散: {block_variance}")
 
             return {
                 "overall_mean": overall_mean,
@@ -298,7 +285,7 @@ class AudioComparator:
                 "block_statistics": []
             }
 
-    def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=100,
+    def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=50,
                              threshold_increment=50):
         """ソース音声とクリッピング音声の各ブロックを比較します。"""
         try:
@@ -409,6 +396,8 @@ class AudioComparator:
 
 
 if __name__ == "__main__":
+    import pandas as pd
+
     # パスを適切に設定してください
     source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
     clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
@@ -417,13 +406,19 @@ if __name__ == "__main__":
     # 音声を処理
     result = comparator.process_audio(source_audio, clipping_audio)
 
-    # 結果の表示
+    # 結果の表示と保存
     if result:
         print("マッチしたブロック:")
         for block in result:
             print(f"Clip Start: {block['clip_start']}, Clip End: {block['clip_end']}, "
                   f"Source Start: {block['source_start']}, Source End: {block['source_end']}, "
                   f"Matched: {block['matched']}, Distance: {block['distance']}, "
-                  f"Text: \"{block['text']}\", 分散: {block['variance']}, 閾値: {block['threshold']}")
+                  f"Text: \"{block['text']}\", 分散: {block['variance']}")
+
+        # Pandas DataFrame に保存
+        output_csv = "audio_comparison_results.csv"
+        df = pd.DataFrame(result)
+        df.to_csv(output_csv, index=False, encoding='utf-8-sig')
+        print(f"結果が {output_csv} に保存されました。")
     else:
         print("マッチするブロックが見つからないか、音声の処理に失敗しました。")
