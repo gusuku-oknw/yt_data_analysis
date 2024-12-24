@@ -19,25 +19,33 @@ class AudioComparator:
         ).to(self.device)
 
         # Silero VAD model loading once
-        self.vad_model, self.vad_utils = torch.hub.load(
-            repo_or_dir='snakers4/silero-vad',
-            model='silero_vad',
-            force_reload=False
-        )
-        self.get_speech_timestamps, self.save_audio, self.read_audio, _, _ = self.vad_utils
+        try:
+            self.vad_model, self.vad_utils = torch.hub.load(
+                repo_or_dir='snakers4/silero-vad',
+                model='silero_vad',
+                force_reload=False
+            )
+            self.get_speech_timestamps, self.save_audio, self.read_audio, _, _ = self.vad_utils
+        except Exception as e:
+            print(f"Error loading Silero VAD model: {e}")
+            raise
 
         # Kotoba-Whisper model pipeline
-        self.kotoba_whisper_model_id = "kotoba-tech/kotoba-whisper-v1.0"
-        self.kotoba_whisper_torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        self.kotoba_whisper_device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        self.kotoba_whisper_model_kwargs = {"attn_implementation": "sdpa"} if torch.cuda.is_available() else {}
-        self.kotoba_whisper_pipe = pipeline(
-            "automatic-speech-recognition",
-            model=self.kotoba_whisper_model_id,
-            torch_dtype=self.kotoba_whisper_torch_dtype,
-            device=self.kotoba_whisper_device,
-            model_kwargs=self.kotoba_whisper_model_kwargs
-        )
+        try:
+            self.kotoba_whisper_model_id = "kotoba-tech/kotoba-whisper-v1.0"
+            self.kotoba_whisper_torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+            self.kotoba_whisper_device = "cuda:0" if torch.cuda.is_available() else -1  # Changed to device ID
+            self.kotoba_whisper_model_kwargs = {"attn_implementation": "sdpa"} if torch.cuda.is_available() else {}
+            self.kotoba_whisper_pipe = pipeline(
+                "automatic-speech-recognition",
+                model=self.kotoba_whisper_model_id,
+                torch_dtype=self.kotoba_whisper_torch_dtype,
+                device=self.kotoba_whisper_device,
+                model_kwargs=self.kotoba_whisper_model_kwargs
+            )
+        except Exception as e:
+            print(f"Error loading kotoba-whisper model: {e}")
+            raise
 
     def SileroVAD_detect_silence(self, audio_file, threshold=0.5):
         """Detect silence in an audio file using Silero VAD."""
@@ -222,7 +230,8 @@ class AudioComparator:
             print(f"An error occurred in calculate_audio_statistics: {e}")
             return {}
 
-    def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=100, threshold_increment=50):
+    def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=100,
+                             threshold_increment=50):
         """Compare audio blocks between source and clipping audio."""
         try:
             source_full_mfcc = self.compute_full_mfcc(source_audio)
@@ -240,7 +249,8 @@ class AudioComparator:
                 while not match_found:
                     for i in range(source_index, len(source_blocks)):
                         source_block = source_blocks[i]
-                        source_mfcc = self.extract_mfcc_block(source_full_mfcc, source_block["from"], source_block["to"])
+                        source_mfcc = self.extract_mfcc_block(source_full_mfcc, source_block["from"],
+                                                              source_block["to"])
 
                         distance = fastdtw(clip_mfcc, source_mfcc, dist=euclidean)[0]
 
@@ -261,6 +271,7 @@ class AudioComparator:
                             print(f"No match found for clip block {j} after raising threshold to {current_threshold}")
                             break
 
+            # 必ず2つの値を返す
             return matches, current_threshold
         except Exception as e:
             print(f"An error occurred in compare_audio_blocks: {e}")
@@ -291,19 +302,22 @@ class AudioComparator:
 
             transcriptions = self.transcribe_blocks(source_audio, source_blocks)
 
-            matches, final_threshold = self.compare_audio_blocks(source_audio, clipping_audio, source_blocks, clipping_blocks)
+            # compare_audio_blocksの戻り値を確実に取得
+            matches, final_threshold = self.compare_audio_blocks(source_audio, clipping_audio, source_blocks,
+                                                                 clipping_blocks)
 
+            matched_indices = {match["source_start"]: match for match in matches}
             detailed_results = []
 
-            for match in matches:
-                matching_transcription = next((t for t in transcriptions if t["start"] == match["source_start"]), None)
-
+            for source_block in source_blocks:
+                match = matched_indices.get(source_block["from"])
                 detailed_results.append({
-                    "clip_start": match["clip_start"],
-                    "clip_end": match["clip_end"],
-                    "source_start": match["source_start"],
-                    "source_end": match["source_end"],
-                    "text": matching_transcription["text"] if matching_transcription else ""
+                    "clip_start": match["clip_start"] if match else None,
+                    "clip_end": match["clip_end"] if match else None,
+                    "source_start": source_block["from"],
+                    "source_end": source_block["to"],
+                    "text": next((t["text"] for t in transcriptions if t["start"] == source_block["from"]), ""),
+                    "matched": bool(match)
                 })
 
             return {
@@ -313,6 +327,7 @@ class AudioComparator:
         except Exception as e:
             print(f"An error occurred in process_audio: {e}")
             return {"blocks": [], "current_threshold": 100}
+
 
 if __name__ == "__main__":
     import pandas as pd
@@ -328,7 +343,7 @@ if __name__ == "__main__":
 
     if result["blocks"]:
         # Pandas DataFrame に保存
-        output_csv = "transcription_results.csv"
+        output_csv = "transcription_results_with_match.csv"
         df = pd.DataFrame(result["blocks"])
         df.to_csv(output_csv, index=False, encoding='utf-8-sig')
 
@@ -336,7 +351,9 @@ if __name__ == "__main__":
 
         print("Transcriptions:")
         for block in result["blocks"]:
-            print(f"Clip Start: {block['clip_start']:.2f}s, Clip End: {block['clip_end']:.2f}s, Text: {block['text']}")
+            print(f"Clip Start: {block['clip_start']}, Clip End: {block['clip_end']}, "
+                  f"Source Start: {block['source_start']}, Source End: {block['source_end']}, "
+                  f"Matched: {block['matched']}, Text: {block['text']}")
     else:
         print("No matching blocks found or transcription failed.")
 
