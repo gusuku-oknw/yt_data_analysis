@@ -81,17 +81,30 @@ class AudioComparator:
 
     def compute_full_mfcc(self, audio_path):
         """Compute MFCC for the entire audio file."""
-        waveform, file_sr = torchaudio.load(audio_path)
-        if file_sr != self.sampling_rate:
-            resampler = torchaudio.transforms.Resample(orig_freq=file_sr, new_freq=self.sampling_rate).to(self.device)
-            waveform = waveform.to(self.device)  # デバイスを統一
-            waveform = resampler(waveform)
-        else:
-            waveform = waveform.to(self.device)  # デバイスを統一
+        try:
+            # Load audio file
+            waveform, file_sr = torchaudio.load(audio_path)
 
-        # MFCC計算
-        mfcc = self.mfcc_transform(waveform)
-        return mfcc.squeeze(0)
+            # Check if sampling rate conversion is needed
+            if file_sr != self.sampling_rate:
+                resampler = torchaudio.transforms.Resample(orig_freq=file_sr, new_freq=self.sampling_rate).to(
+                    self.device)
+                waveform = waveform.to(self.device)  # Move to the desired device
+                waveform = resampler(waveform)
+            else:
+                waveform = waveform.to(self.device)  # Directly move to the device if sampling rate matches
+
+            # Compute MFCC
+            mfcc = self.mfcc_transform(waveform)
+            return mfcc.squeeze(0)
+
+        except torch.cuda.OutOfMemoryError as e:
+            print("CUDA Out of Memory Error:", e)
+            torch.cuda.empty_cache()
+            raise
+        except Exception as e:
+            print("An error occurred while computing MFCC:", e)
+            raise
 
     def extract_mfcc_block(self, full_mfcc, start, end):
         """Extract MFCC for a specific time block."""
@@ -117,26 +130,30 @@ class AudioComparator:
             "language": "japanese"
         }
 
-        audio, sampling_rate = librosa.load(audio_file, sr=self.sampling_rate)
-        total_duration = len(audio) / self.sampling_rate
-        segments = []
+        try:
+            audio, sampling_rate = librosa.load(audio_file, sr=self.sampling_rate)
+            total_duration = len(audio) / self.sampling_rate
+            segments = []
 
-        # 音声をセグメントに分割
-        for start in np.arange(0, total_duration, max_segment_duration):
-            end = min(start + max_segment_duration, total_duration)
-            start_sample = int(start * self.sampling_rate)
-            end_sample = int(end * self.sampling_rate)
-            segments.append(audio[start_sample:end_sample])
+            # 音声をセグメントに分割
+            for start in np.arange(0, total_duration, max_segment_duration):
+                end = min(start + max_segment_duration, total_duration)
+                start_sample = int(start * self.sampling_rate)
+                end_sample = int(end * self.sampling_rate)
+                segments.append(audio[start_sample:end_sample])
 
-        # 各セグメントを処理
-        transcriptions = []
-        for segment in segments:
-            audio_input = {"raw": segment, "sampling_rate": self.sampling_rate}
-            result = self.kotoba_whisper_pipe(audio_input, generate_kwargs=generate_kwargs)
-            transcriptions.append(result["text"])
+            # 各セグメントを処理
+            transcriptions = []
+            for segment in segments:
+                audio_input = {"raw": segment, "sampling_rate": self.sampling_rate}
+                result = self.kotoba_whisper_pipe(audio_input, generate_kwargs=generate_kwargs)
+                transcriptions.append(result["text"])
 
-        # セグメントの文字起こしを結合
-        return " ".join(transcriptions)
+            # セグメントの文字起こしを結合
+            return " ".join(transcriptions)
+        except Exception as e:
+            print(f"An error occurred in kotoba_whisper: {e}")
+            return ""
 
     def transcribe_blocks(self, audio_file, blocks):
         """
@@ -150,17 +167,24 @@ class AudioComparator:
             list: List of transcribed text for each block.
         """
         transcriptions = []
-        audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
-        for block in tqdm(blocks, desc="Transcribing Blocks"):
-            start_sample = int(block["from"] * sr)
-            end_sample = int(block["to"] * sr)
-            block_audio = audio[start_sample:end_sample]
+        try:
+            audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
+            for block in tqdm(blocks, desc="Transcribing Blocks"):
+                start_sample = int(block["from"] * sr)
+                end_sample = int(block["to"] * sr)
+                block_audio = audio[start_sample:end_sample]
 
-            audio_input = {"raw": block_audio, "sampling_rate": sr}
-            result = self.kotoba_whisper_pipe(audio_input,
-                                              generate_kwargs={"return_timestamps": True, "language": "japanese"})
-            transcriptions.append(result["text"])
+                audio_input = {"raw": block_audio, "sampling_rate": sr}
+                result = self.kotoba_whisper_pipe(audio_input,
+                                                  generate_kwargs={"return_timestamps": True, "language": "japanese"})
 
+                transcriptions.append({
+                    "text": result["text"],
+                    "start": block["from"],
+                    "end": block["to"]
+                })
+        except Exception as e:
+            print(f"An error occurred in transcribe_blocks: {e}")
         return transcriptions
 
     def calculate_audio_statistics(self, audio_file, blocks):
@@ -174,96 +198,146 @@ class AudioComparator:
         Returns:
             dict: Average loudness of the entire audio and variance for each block.
         """
-        audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
-        overall_mean = np.mean(np.abs(audio))
+        try:
+            audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
+            overall_mean = np.mean(np.abs(audio))
 
-        block_statistics = []
-        for block in blocks:
-            start_sample = int(block["from"] * sr)
-            end_sample = int(block["to"] * sr)
-            block_audio = audio[start_sample:end_sample]
-            block_variance = np.var(block_audio)
-            block_statistics.append({
-                "from": block["from"],
-                "to": block["to"],
-                "variance": block_variance
-            })
+            block_statistics = []
+            for block in blocks:
+                start_sample = int(block["from"] * sr)
+                end_sample = int(block["to"] * sr)
+                block_audio = audio[start_sample:end_sample]
+                block_variance = np.var(block_audio)
+                block_statistics.append({
+                    "from": block["from"],
+                    "to": block["to"],
+                    "variance": block_variance
+                })
 
-        return {
-            "overall_mean": overall_mean,
-            "block_statistics": block_statistics
-        }
+            return {
+                "overall_mean": overall_mean,
+                "block_statistics": block_statistics
+            }
+        except Exception as e:
+            print(f"An error occurred in calculate_audio_statistics: {e}")
+            return {}
 
     def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=100, threshold_increment=50):
         """Compare audio blocks between source and clipping audio."""
-        source_full_mfcc = self.compute_full_mfcc(source_audio)
-        clipping_full_mfcc = self.compute_full_mfcc(clipping_audio)
+        try:
+            source_full_mfcc = self.compute_full_mfcc(source_audio)
+            clipping_full_mfcc = self.compute_full_mfcc(clipping_audio)
 
-        matches = []
-        current_threshold = initial_threshold
-        source_index = 0
+            matches = []
+            current_threshold = initial_threshold
+            source_index = 0
 
-        for j in tqdm(range(len(clipping_blocks)), desc="Processing Blocks"):
-            clip_block = clipping_blocks[j]
-            clip_mfcc = self.extract_mfcc_block(clipping_full_mfcc, clip_block["from"], clip_block["to"])
-            match_found = False
+            for j in tqdm(range(len(clipping_blocks)), desc="Processing Blocks"):
+                clip_block = clipping_blocks[j]
+                clip_mfcc = self.extract_mfcc_block(clipping_full_mfcc, clip_block["from"], clip_block["to"])
+                match_found = False
 
-            while not match_found:
-                for i in range(source_index, len(source_blocks)):
-                    source_block = source_blocks[i]
-                    source_mfcc = self.extract_mfcc_block(source_full_mfcc, source_block["from"], source_block["to"])
+                while not match_found:
+                    for i in range(source_index, len(source_blocks)):
+                        source_block = source_blocks[i]
+                        source_mfcc = self.extract_mfcc_block(source_full_mfcc, source_block["from"], source_block["to"])
 
-                    distance = fastdtw(clip_mfcc, source_mfcc, dist=euclidean)[0]
+                        distance = fastdtw(clip_mfcc, source_mfcc, dist=euclidean)[0]
 
-                    if distance < current_threshold:
-                        matches.append({
-                            "clip_start": clip_block["from"],
-                            "clip_end": clip_block["to"],
-                            "source_start": source_block["from"],
-                            "source_end": source_block["to"]
-                        })
-                        source_index = i + 1
-                        match_found = True
-                        break
+                        if distance < current_threshold:
+                            matches.append({
+                                "clip_start": clip_block["from"],
+                                "clip_end": clip_block["to"],
+                                "source_start": source_block["from"],
+                                "source_end": source_block["to"]
+                            })
+                            source_index = i + 1
+                            match_found = True
+                            break
 
-                if not match_found:
-                    current_threshold += threshold_increment
-                    if current_threshold > 1000:
-                        print(f"No match found for clip block {j} after raising threshold to {current_threshold}")
-                        break
+                    if not match_found:
+                        current_threshold += threshold_increment
+                        if current_threshold > 1000:
+                            print(f"No match found for clip block {j} after raising threshold to {current_threshold}")
+                            break
 
-        return {
-            "matches": [
-                {
-                    "clip": (match["clip_start"], match["clip_end"]),
-                    "source": (match["source_start"], match["source_end"]),
-                }
-                for match in matches
-            ],
-            "final_threshold": current_threshold
-        }
+            return matches, current_threshold
+        except Exception as e:
+            print(f"An error occurred in compare_audio_blocks: {e}")
+            return [], initial_threshold
+
+    def process_audio(self, source_audio, clipping_audio):
+        """
+        Process source and clipping audio to find matching blocks and transcribe them.
+
+        Parameters:
+            source_audio (str): Path to the source audio file.
+            clipping_audio (str): Path to the clipping audio file.
+
+        Returns:
+            dict: Detailed results including matched blocks and final threshold used.
+        """
+        try:
+            source_blocks = self.SileroVAD_detect_silence(source_audio)
+            clipping_blocks = self.SileroVAD_detect_silence(clipping_audio)
+
+            if not source_blocks:
+                print("No speech blocks detected in source audio.")
+                return {"blocks": [], "current_threshold": 100}
+
+            if not clipping_blocks:
+                print("No speech blocks detected in clipping audio.")
+                return {"blocks": [], "current_threshold": 100}
+
+            transcriptions = self.transcribe_blocks(source_audio, source_blocks)
+
+            matches, final_threshold = self.compare_audio_blocks(source_audio, clipping_audio, source_blocks, clipping_blocks)
+
+            detailed_results = []
+
+            for match in matches:
+                matching_transcription = next((t for t in transcriptions if t["start"] == match["source_start"]), None)
+
+                detailed_results.append({
+                    "clip_start": match["clip_start"],
+                    "clip_end": match["clip_end"],
+                    "source_start": match["source_start"],
+                    "source_end": match["source_end"],
+                    "text": matching_transcription["text"] if matching_transcription else ""
+                })
+
+            return {
+                "blocks": detailed_results,
+                "current_threshold": final_threshold
+            }
+        except Exception as e:
+            print(f"An error occurred in process_audio: {e}")
+            return {"blocks": [], "current_threshold": 100}
 
 if __name__ == "__main__":
+    import pandas as pd
+
+    # パスを適切に設定してください
     source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
     clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
 
-    comparator = AudioComparator()
+    comparator = AudioComparator(sampling_rate=16000)
 
-    source_blocks = comparator.SileroVAD_detect_silence(source_audio)
-    clipping_blocks = comparator.SileroVAD_detect_silence(clipping_audio)
+    # 音声を処理して結果を取得
+    result = comparator.process_audio(source_audio, clipping_audio)
 
-    transcriptions = comparator.transcribe_blocks(source_audio, source_blocks)
-    for i, transcription in enumerate(transcriptions):
-        print(f"Block {i + 1}: {transcription}")
+    if result["blocks"]:
+        # Pandas DataFrame に保存
+        output_csv = "transcription_results.csv"
+        df = pd.DataFrame(result["blocks"])
+        df.to_csv(output_csv, index=False, encoding='utf-8-sig')
 
-    audio_statistics = comparator.calculate_audio_statistics(source_audio, source_blocks)
-    print("Overall Mean Loudness:", audio_statistics["overall_mean"])
-    for block_stat in audio_statistics["block_statistics"]:
-        print(f"Block {block_stat['from']}-{block_stat['to']} Variance: {block_stat['variance']}")
+        print(f"Transcriptions saved to {output_csv}")
 
-    result = comparator.compare_audio_blocks(source_audio, clipping_audio, source_blocks, clipping_blocks)
+        print("Transcriptions:")
+        for block in result["blocks"]:
+            print(f"Clip Start: {block['clip_start']:.2f}s, Clip End: {block['clip_end']:.2f}s, Text: {block['text']}")
+    else:
+        print("No matching blocks found or transcription failed.")
 
-    for match in result["matches"]:
-        print(f"Source: {match['source']}, Clip: {match['clip']}")
-
-    print(f"Final threshold used: {result['final_threshold']}")
+    print(f"\nFinal Threshold Used: {result['current_threshold']}")
