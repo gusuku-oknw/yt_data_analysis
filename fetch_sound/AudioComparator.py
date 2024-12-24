@@ -96,62 +96,74 @@ class AudioComparator:
     def compute_full_mfcc(self, audio_path, segment_duration=10.0):
         """
         Compute MFCC for audio in smaller segments to reduce memory usage.
+        Handles padding to ensure all segments are of the same size.
         """
         torch.cuda.empty_cache()
         try:
+            # Load the audio file
             waveform, file_sr = torchaudio.load(audio_path)
 
-            # Resample if necessary
+            # Resample if the sampling rate doesn't match
             if file_sr != self.sampling_rate:
                 resampler = torchaudio.transforms.Resample(orig_freq=file_sr, new_freq=self.sampling_rate)
                 waveform = resampler(waveform)
 
-            # Move waveform to the same device as self.device
-            waveform = waveform.to(self.device)
+            # Move the waveform to the correct device
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            waveform = waveform.to(device)
 
-            # Process in segments to reduce memory usage
+            # Calculate total duration
             total_duration = waveform.shape[1] / self.sampling_rate
-            segments = []
-            max_length = 0
 
+            # Initialize variables
+            segments = []
+            max_length = 0  # To track the maximum segment length
+
+            # Process the waveform in smaller segments
             for start in np.arange(0, total_duration, segment_duration):
                 end = min(start + segment_duration, total_duration)
                 start_sample = int(start * self.sampling_rate)
                 end_sample = int(end * self.sampling_rate)
                 segment_waveform = waveform[:, start_sample:end_sample]
 
-                if segment_waveform.shape[1] > 0:  # Skip empty segments
-                    mfcc = self.mfcc_transform(segment_waveform).squeeze(0)
+                if segment_waveform.shape[1] > 0:  # Ensure the segment is not empty
+                    mfcc = self.mfcc_transform(segment_waveform).squeeze(0)  # Compute MFCC
                     segments.append(mfcc)
-                    max_length = max(max_length, mfcc.size(1))
+                    max_length = max(max_length, mfcc.size(1))  # Update maximum length
                     del segment_waveform, mfcc  # Free memory
 
-            # Check if any segments were processed
             if not segments:
                 raise RuntimeError("No valid segments were processed for MFCC computation.")
 
             # Pad segments to the maximum length
-            padded_segments = [
-                torch.nn.functional.pad(segment, (0, max_length - segment.size(1)))
-                for segment in segments
-            ]
+            padded_segments = []
+            for idx, segment in enumerate(segments):
+                if segment.size(1) < max_length:
+                    padded_segment = torch.nn.functional.pad(segment, (0, max_length - segment.size(1)))
+                    padded_segments.append(padded_segment)
+                else:
+                    padded_segments.append(segment)
 
-            # Ensure all segments are padded correctly
+            # Verify segment sizes
             for idx, segment in enumerate(padded_segments):
                 if segment.size(1) != max_length:
-                    logging.error(f"Segment {idx} has incorrect size after padding: {segment.size(1)}")
-                    raise RuntimeError("Padding failed for one or more segments.")
+                    print(f"Segment {idx} has incorrect size after padding: {segment.size(1)}")
+                    raise RuntimeError(f"Padding failed for segment {idx}.")
 
+            # Concatenate all padded segments along the time axis
             full_mfcc = torch.cat(padded_segments, dim=1)
+
+            # Clear CUDA memory cache
             torch.cuda.empty_cache()
+
             return full_mfcc
 
         except torch.cuda.OutOfMemoryError as e:
-            logging.error("CUDAメモリ不足エラー:", exc_info=True)
+            print("CUDA memory error during MFCC computation:", e)
             torch.cuda.empty_cache()
             raise
         except Exception as e:
-            logging.error("MFCC計算中にエラーが発生しました:", exc_info=True)
+            print("Error occurred during MFCC computation:", e)
             raise
 
     def extract_mfcc_block(self, full_mfcc, start, end):
