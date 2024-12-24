@@ -10,6 +10,7 @@ from transformers import pipeline
 import librosa
 import pandas as pd  # インポートを先頭に移動
 import logging  # ロギングのために追加
+from mutagen.mp3 import MP3
 
 # ロギングの設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -92,21 +93,58 @@ class AudioComparator:
             logging.error(f"SileroVAD_detect_silence中でエラーが発生しました: {e}")
             return []
 
-    def compute_full_mfcc(self, audio_path):
-        """音声ファイル全体のMFCCを計算します。"""
+    def compute_full_mfcc(self, audio_path, segment_duration=10.0):
+        """
+        Compute MFCC for audio in smaller segments to reduce memory usage.
+        """
+        torch.cuda.empty_cache()
         try:
             waveform, file_sr = torchaudio.load(audio_path)
 
+            # Resample if necessary
             if file_sr != self.sampling_rate:
-                resampler = torchaudio.transforms.Resample(orig_freq=file_sr, new_freq=self.sampling_rate).to(
-                    self.device)
-                waveform = waveform.to(self.device)
+                resampler = torchaudio.transforms.Resample(orig_freq=file_sr, new_freq=self.sampling_rate)
                 waveform = resampler(waveform)
-            else:
-                waveform = waveform.to(self.device)
 
-            mfcc = self.mfcc_transform(waveform)
-            return mfcc.squeeze(0)
+            # Move waveform to the same device as self.device
+            waveform = waveform.to(self.device)
+
+            # Process in segments to reduce memory usage
+            total_duration = waveform.shape[1] / self.sampling_rate
+            segments = []
+            max_length = 0
+
+            for start in np.arange(0, total_duration, segment_duration):
+                end = min(start + segment_duration, total_duration)
+                start_sample = int(start * self.sampling_rate)
+                end_sample = int(end * self.sampling_rate)
+                segment_waveform = waveform[:, start_sample:end_sample]
+
+                if segment_waveform.shape[1] > 0:  # Skip empty segments
+                    mfcc = self.mfcc_transform(segment_waveform).squeeze(0)
+                    segments.append(mfcc)
+                    max_length = max(max_length, mfcc.size(1))
+                    del segment_waveform, mfcc  # Free memory
+
+            # Check if any segments were processed
+            if not segments:
+                raise RuntimeError("No valid segments were processed for MFCC computation.")
+
+            # Pad segments to the maximum length
+            padded_segments = [
+                torch.nn.functional.pad(segment, (0, max_length - segment.size(1)))
+                for segment in segments
+            ]
+
+            # Ensure all segments are padded correctly
+            for idx, segment in enumerate(padded_segments):
+                if segment.size(1) != max_length:
+                    logging.error(f"Segment {idx} has incorrect size after padding: {segment.size(1)}")
+                    raise RuntimeError("Padding failed for one or more segments.")
+
+            full_mfcc = torch.cat(padded_segments, dim=1)
+            torch.cuda.empty_cache()
+            return full_mfcc
 
         except torch.cuda.OutOfMemoryError as e:
             logging.error("CUDAメモリ不足エラー:", exc_info=True)
@@ -206,23 +244,31 @@ class AudioComparator:
             blocks (list): "from" と "to" 時間を含むブロックのリスト。
 
         Returns:
-            dict: 全体の平均音量と各ブロックの分散。
+            dict: 全体の平均音量と各ブロックの分散を含む辞書。
         """
         try:
+            # 音声ファイルを読み込む
             audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
-            overall_mean = np.mean(np.abs(audio))
 
+            # 全体の平均振幅を計算
+            overall_mean = np.mean(np.abs(audio))
+            logging.info(f"全体の平均音量: {overall_mean}")
+
+            # 各ブロックの分散を計算
             block_statistics = []
             for block in blocks:
                 start_sample = int(block["from"] * sr)
                 end_sample = int(block["to"] * sr)
                 block_audio = audio[start_sample:end_sample]
+
+                # ブロックの分散を計算
                 block_variance = np.var(block_audio)
                 block_statistics.append({
                     "from": block["from"],
                     "to": block["to"],
                     "variance": block_variance
                 })
+                logging.info(f"ブロック {block['from']} - {block['to']} の分散: {block_variance}")
 
             return {
                 "overall_mean": overall_mean,
@@ -230,7 +276,10 @@ class AudioComparator:
             }
         except Exception as e:
             logging.error(f"calculate_audio_statistics中でエラーが発生しました: {e}", exc_info=True)
-            return {}
+            return {
+                "overall_mean": None,
+                "block_statistics": []
+            }
 
     def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=100,
                              threshold_increment=50):
@@ -282,33 +331,41 @@ class AudioComparator:
 
     def process_audio(self, source_audio, clipping_audio):
         """
-        ソース音声とクリッピング音声を処理して、マッチするブロックを見つけて文字起こしします。
+        ソース音声とクリッピング音声を処理して、マッチするブロック、文字起こし、統計情報を取得します。
 
         Parameters:
             source_audio (str): ソース音声ファイルのパス。
             clipping_audio (str): クリッピング音声ファイルのパス。
 
         Returns:
-            dict: マッチしたブロックと最終的な閾値を含む詳細な結果。
+            list: マッチしたブロックの詳細情報を含むリスト。
         """
         try:
+            # ソースとクリッピングの音声ブロックを検出
             source_blocks = self.SileroVAD_detect_silence(source_audio)
             clipping_blocks = self.SileroVAD_detect_silence(clipping_audio)
 
             if not source_blocks:
                 logging.info("ソース音声で音声ブロックが検出されませんでした。")
-                return {"blocks": [], "current_threshold": 100}
+                return []
 
             if not clipping_blocks:
                 logging.info("クリッピング音声で音声ブロックが検出されませんでした。")
-                return {"blocks": [], "current_threshold": 100}
+                return []
 
+            # ソース音声ブロックを文字起こし
             transcriptions = self.transcribe_blocks(source_audio, source_blocks)
 
-            # compare_audio_blocksの戻り値を確実に取得
-            matches, final_threshold = self.compare_audio_blocks(source_audio, clipping_audio, source_blocks,
-                                                                 clipping_blocks)
+            # 音声ブロックを比較
+            matches, final_threshold = self.compare_audio_blocks(
+                source_audio, clipping_audio, source_blocks, clipping_blocks
+            )
 
+            # 統計情報を計算
+            statistics = self.calculate_audio_statistics(source_audio, source_blocks)
+            block_variance_map = {stat["from"]: stat["variance"] for stat in statistics["block_statistics"]}
+
+            # 結果を詳細に整理
             matched_indices = {match["source_start"]: match for match in matches}
             detailed_results = []
 
@@ -321,16 +378,17 @@ class AudioComparator:
                     "source_end": source_block["to"],
                     "text": next((t["text"] for t in transcriptions if t["start"] == source_block["from"]), ""),
                     "matched": bool(match),
-                    "distance": match["distance"] if match else None  # distanceを追加
+                    "distance": match["distance"] if match else None,
+                    "variance": block_variance_map.get(source_block["from"], None),
+                    "threshold": final_threshold
                 })
 
-            return {
-                "blocks": detailed_results,
-                "current_threshold": final_threshold
-            }
+            # 結果を返す
+            torch.cuda.empty_cache()
+            return detailed_results
         except Exception as e:
             logging.error(f"process_audio中でエラーが発生しました: {e}", exc_info=True)
-            return {"blocks": [], "current_threshold": 100}
+            return []
 
 
 if __name__ == "__main__":
@@ -338,25 +396,17 @@ if __name__ == "__main__":
     source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
     clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
 
-    comparator = AudioComparator(sampling_rate=16000)
-
-    # 音声を処理して結果を取得
+    comparator = AudioComparator(sampling_rate=torchaudio.info(clipping_audio).sample_rate)
+    # 音声を処理
     result = comparator.process_audio(source_audio, clipping_audio)
 
-    if result["blocks"]:
-        # Pandas DataFrame に保存
-        output_csv = "transcription_results_with_match.csv"
-        df = pd.DataFrame(result["blocks"])
-        df.to_csv(output_csv, index=False, encoding='utf-8-sig')
-
-        logging.info(f"文字起こし結果が {output_csv} に保存されました。")
-
-        print("Transcriptions:")
-        for block in result["blocks"]:
+    # 結果の表示
+    if result:
+        print("マッチしたブロック:")
+        for block in result:
             print(f"Clip Start: {block['clip_start']}, Clip End: {block['clip_end']}, "
                   f"Source Start: {block['source_start']}, Source End: {block['source_end']}, "
-                  f"Matched: {block['matched']}, Distance: {block['distance']}, Text: {block['text']}")
+                  f"Matched: {block['matched']}, Distance: {block['distance']}, "
+                  f"Text: \"{block['text']}\", 分散: {block['variance']}, 閾値: {block['threshold']}")
     else:
-        logging.info("マッチするブロックが見つからないか、文字起こしに失敗しました。")
-
-    logging.info(f"\n最終的な閾値: {result['current_threshold']}")
+        print("マッチするブロックが見つからないか、音声の処理に失敗しました。")

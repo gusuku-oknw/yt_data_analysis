@@ -1,142 +1,110 @@
+from datetime import datetime
 import os
-import torch
-import torchaudio
-from torchaudio.transforms import MFCC
-from fastdtw import fastdtw
-from scipy.spatial.distance import euclidean
-from tqdm import tqdm
+import pandas as pd
+from chat_utils import list_original_urls
+from chat_processor import ChatProcessor, ChatDownloader
+from chat_emotions import EmotionAnalyzer
 
-class AudioComparator:
-    def __init__(self, sampling_rate=16000, n_mfcc=13):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.sampling_rate = sampling_rate
-        self.mfcc_transform = MFCC(
-            sample_rate=sampling_rate,
-            n_mfcc=n_mfcc
-        ).to(self.device)
 
-    def SileroVAD_detect_silence(self, audio_file, threshold=0.5):
+class VideoProcessingPipeline:
+    def __init__(self, base_dir="../data", progress_file="processing_progress.csv"):
         """
-        Silero VADを使って音声の区切り（静寂部分）を検出。
+        動画処理パイプラインの初期化。
+
+        Parameters:
+            base_dir (str): データ保存の基本ディレクトリ。
+            progress_file (str): 処理進捗を記録するファイル名。
         """
-        print(f"detect_silence: {audio_file}")
-        try:
-            # Silero VADモデルをロード
-            model, utils = torch.hub.load(
-                repo_or_dir='snakers4/silero-vad',
-                model='silero_vad',
-                force_reload=True
+        self.base_dir = base_dir
+        self.progress_file = os.path.join(base_dir, progress_file)
+        self.matches_dir = os.path.join(base_dir, "matches")
+        self.emotion_dir = os.path.join(base_dir, "emotion")
+        self.initialize_directories()
+
+    def initialize_directories(self):
+        """
+        必要なディレクトリ構造を作成。
+        """
+        os.makedirs(self.base_dir, exist_ok=True)
+        os.makedirs(self.matches_dir, exist_ok=True)
+        os.makedirs(self.emotion_dir, exist_ok=True)
+
+    def process_videos(self, input_csv, output_csv=None):
+        """
+        動画のダウンロード、文字起こし、感情分析を順次実行。
+
+        Parameters:
+            input_csv (str): 入力CSVファイルのパス。
+            output_csv (str): 処理結果を保存するCSVファイルパス (省略時は自動生成)。
+        """
+        current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        if not output_csv:
+            output_csv = os.path.join(self.base_dir, f"processing_{current_time}_results.csv")
+
+        # 入力CSVからデータを取得
+        video_data = list_original_urls(input_csv, base_directory=self.base_dir)
+        video_data.to_csv(output_csv, index=False, encoding="utf-8-sig")
+
+        # 処理の進捗記録用の初期化
+        if not os.path.exists(self.progress_file):
+            pd.DataFrame(columns=["index", "source_url", "clipping_url", "file_path", "status"]).to_csv(
+                self.progress_file, index=False, encoding="utf-8-sig"
             )
 
-            # ユーティリティ関数の取得
-            (get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
+        results = []
 
-            # 音声ファイルを読み込み
-            if not os.path.exists(audio_file):
-                raise FileNotFoundError(f"Audio file not found: {audio_file}")
+        # 元動画と切り抜き動画の処理を開始
+        for i, row in video_data.iterrows():
+            source_url = row["Original URL"]
+            clipping_url = row["Video URL"]
+            file_path = row.get("File Path", "")
 
-            audio_tensor = read_audio(audio_file, sampling_rate=self.sampling_rate)
-
-            # 音声セグメントを検出
-            speech_timestamps = get_speech_timestamps(
-                audio_tensor, model, threshold=threshold, sampling_rate=self.sampling_rate
+            print(f"\n=== {i + 1}/{len(video_data)} 番目の動画を処理中 ===")
+            matches_filename = os.path.join(
+                self.matches_dir,
+                f"{get_video_id_from_url(remove_query_params(source_url))}_{get_video_id_from_url(remove_query_params(clipping_url))}.csv"
             )
 
-            if not speech_timestamps:
-                print(f"No speech detected in {audio_file}")
-                return []
+            # 処理済みの場合はスキップ
+            if os.path.exists(matches_filename):
+                print(f"既に処理済み: {matches_filename}")
+                continue
 
-            # 静寂区間の計算
-            silences = []
-            last_end = 0
-            audio_length = audio_tensor.shape[-1]
-            for segment in speech_timestamps:
-                if last_end < segment['start']:
-                    silences.append({
-                        "from": last_end / self.sampling_rate,
-                        "to": segment['start'] / self.sampling_rate,
-                        "suffix": "cut"
-                    })
-                last_end = segment['end']
+            # ダウンロードと文字起こし
+            results.append({"index": i + 1, "source_url": source_url, "clipping_url": clipping_url, "file_path": file_path, "status": "文字起こし中"})
+            self.update_progress(results)
 
-            if last_end < audio_length:
-                silences.append({
-                    "from": last_end / self.sampling_rate,
-                    "to": audio_length / self.sampling_rate,
-                    "suffix": "cut"
-                })
+            result = download_and_transcribe(source_url, clipping_url)
+            results[-1]["status"] = result["status"] if result["status"] == "success" else f"失敗: {result.get('error', '詳細不明')}"
+            self.update_progress(results)
 
-            return silences
-        except Exception as e:
-            print(f"An error occurred in SileroVAD_detect_silence: {e}")
-            return []
+            if result["status"] == "success":
+                # 感情分析の実行
+                print("感情分析を実行中...")
+                results[-1]["status"] = "感情分析中"
+                self.update_progress(results)
 
-    @staticmethod
-    def extract_mfcc(audio_path, start, end, sr=16000, n_mfcc=13):
-        """指定された区間のMFCCを抽出（1次元に変換）。"""
-        y, _ = torchaudio.load(audio_path, frame_offset=int(start * sr), num_frames=int((end - start) * sr))
-        waveform = y.to("cuda" if torch.cuda.is_available() else "cpu")
-
-        # MFCCの計算
-        mfcc = torchaudio.transforms.MFCC(sample_rate=sr, n_mfcc=n_mfcc).to(waveform.device)(waveform)
-
-        # MFCCを2次元から1次元ベクトルに変換（時間軸方向の平均）
-        mfcc_1d = mfcc.mean(dim=-1).squeeze(0).cpu().numpy()
-        return mfcc_1d
-
-    def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks):
-        """
-        区切られたブロック同士で一致を確認し、逐次的に探索を最適化。
-        """
-        matches = []
-        clip_index = 0  # 切り抜き動画の現在位置
-        for i, source_block in tqdm(enumerate(source_blocks), total=len(source_blocks)):
-            source_mfcc = self.extract_mfcc(
-                source_audio, source_block["from"], source_block["to"]
-            )
-            # 逐次的に一致探索
-            for j in range(clip_index, len(clipping_blocks)):
-                clip_block = clipping_blocks[j]
-                clip_mfcc = self.extract_mfcc(
-                    clipping_audio, clip_block["from"], clip_block["to"]
+                analysis_result = main_emotion_analysis(
+                    file_path=file_path,
+                    analysis_methods=["sentiment", "weime", "mlask"],
+                    plot_results=False,
+                    save_dir=self.emotion_dir
                 )
-                # fastdtwに1次元ベクトルを渡す
-                distance, _ = fastdtw(source_mfcc, clip_mfcc, dist=euclidean)
+                results[-1]["status"] = "完了"
+                self.update_progress(results)
 
-                if distance < 100:  # 閾値を調整
-                    matches.append({
-                        "source_start": source_block["from"],
-                        "source_end": source_block["to"],
-                        "clip_start": clip_block["from"],
-                        "clip_end": clip_block["to"]
-                    })
-                    clip_index = j + 1  # 次の比較を現在の位置から開始
-                    break  # 一度一致したら次のソースブロックへ
+        # 処理結果を保存
+        results_df = pd.DataFrame(results)
+        results_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
+        print(f"全ての処理が完了しました: {output_csv}")
 
-        # 結果としてstartとendだけを出力
-        return [
-            {
-                "source": (match["source_start"], match["source_end"]),
-                "clip": (match["clip_start"], match["clip_end"]),
-            }
-            for match in matches
-        ]
+    def update_progress(self, results):
+        """
+        処理進捗を記録。
+        """
+        pd.DataFrame(results).to_csv(self.progress_file, index=False, encoding="utf-8-sig")
 
 
-# ファイルパスの設定
-source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
-clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
-
-# AudioComparatorのインスタンス作成
-comparator = AudioComparator()
-
-# VADを用いた音声区切りの取得
-source_blocks = comparator.SileroVAD_detect_silence(source_audio)
-clipping_blocks = comparator.SileroVAD_detect_silence(clipping_audio)
-
-# ブロック間の一致を確認
-matches = comparator.compare_audio_blocks(source_audio, clipping_audio, source_blocks, clipping_blocks)
-
-# 一致結果を出力
-for match in matches:
-    print(f"Source: {match['source']}, Clip: {match['clip']}")
+if __name__ == "__main__":
+    pipeline = VideoProcessingPipeline()
+    pipeline.process_videos(input_csv="../data/test_processed.csv")
