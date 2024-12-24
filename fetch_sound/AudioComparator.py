@@ -117,7 +117,6 @@ class AudioComparator:
 
             # Initialize variables
             segments = []
-            max_length = 0  # To track the maximum segment length
 
             # Process the waveform in smaller segments
             for start in np.arange(0, total_duration, segment_duration):
@@ -129,29 +128,35 @@ class AudioComparator:
                 if segment_waveform.shape[1] > 0:  # Ensure the segment is not empty
                     mfcc = self.mfcc_transform(segment_waveform).squeeze(0)  # Compute MFCC
                     segments.append(mfcc)
-                    max_length = max(max_length, mfcc.size(1))  # Update maximum length
                     del segment_waveform, mfcc  # Free memory
 
             if not segments:
                 raise RuntimeError("No valid segments were processed for MFCC computation.")
 
-            # Pad segments to the maximum length
+            # Debug: Log all segment sizes before padding
+            logging.info("--- Segment Sizes Before Padding ---")
+            for idx, segment in enumerate(segments):
+                logging.info(f"Segment {idx}: {segment.size()}")
+
+            # Determine the maximum length
+            max_length = max(segment.size(1) for segment in segments)
+
+            # Pad all segments to the maximum length
             padded_segments = []
             for idx, segment in enumerate(segments):
-                if segment.size(1) < max_length:
-                    padded_segment = torch.nn.functional.pad(segment, (0, max_length - segment.size(1)))
-                    padded_segments.append(padded_segment)
-                else:
-                    padded_segments.append(segment)
+                padded_segment = torch.nn.functional.pad(segment, (0, max_length - segment.size(1)))
+                padded_segments.append(padded_segment)
 
-            # Verify segment sizes
+            # Verify segment sizes after padding
+            logging.info("--- Segment Sizes After Padding ---")
             for idx, segment in enumerate(padded_segments):
+                logging.info(f"Segment {idx}: {segment.size()}")
                 if segment.size(1) != max_length:
-                    print(f"Segment {idx} has incorrect size after padding: {segment.size(1)}")
+                    logging.error(f"Segment {idx} has incorrect size after padding: {segment.size(1)}")
                     raise RuntimeError(f"Padding failed for segment {idx}.")
 
             # Concatenate all padded segments along the time axis
-            full_mfcc = torch.cat(padded_segments, dim=1)
+            full_mfcc = torch.cat(padded_segments, dim=2)
 
             # Clear CUDA memory cache
             torch.cuda.empty_cache()
@@ -159,11 +164,11 @@ class AudioComparator:
             return full_mfcc
 
         except torch.cuda.OutOfMemoryError as e:
-            print("CUDA memory error during MFCC computation:", e)
+            logging.error("CUDA memory error during MFCC computation:", exc_info=True)
             torch.cuda.empty_cache()
             raise
         except Exception as e:
-            print("Error occurred during MFCC computation:", e)
+            logging.error("Error occurred during MFCC computation:", exc_info=True)
             raise
 
     def extract_mfcc_block(self, full_mfcc, start, end):
