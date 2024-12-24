@@ -8,6 +8,11 @@ from tqdm import tqdm
 import numpy as np
 from transformers import pipeline
 import librosa
+import pandas as pd  # インポートを先頭に移動
+import logging  # ロギングのために追加
+
+# ロギングの設定
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class AudioComparator:
     def __init__(self, sampling_rate=16000, n_mfcc=13):
@@ -27,14 +32,14 @@ class AudioComparator:
             )
             self.get_speech_timestamps, self.save_audio, self.read_audio, _, _ = self.vad_utils
         except Exception as e:
-            print(f"Error loading Silero VAD model: {e}")
+            logging.error(f"Silero VADモデルの読み込み中にエラーが発生しました: {e}")
             raise
 
         # Kotoba-Whisper model pipeline
         try:
             self.kotoba_whisper_model_id = "kotoba-tech/kotoba-whisper-v1.0"
             self.kotoba_whisper_torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-            self.kotoba_whisper_device = "cuda:0" if torch.cuda.is_available() else -1  # Changed to device ID
+            self.kotoba_whisper_device = 0 if torch.cuda.is_available() else -1  # デバイスIDに変更
             self.kotoba_whisper_model_kwargs = {"attn_implementation": "sdpa"} if torch.cuda.is_available() else {}
             self.kotoba_whisper_pipe = pipeline(
                 "automatic-speech-recognition",
@@ -44,14 +49,14 @@ class AudioComparator:
                 model_kwargs=self.kotoba_whisper_model_kwargs
             )
         except Exception as e:
-            print(f"Error loading kotoba-whisper model: {e}")
+            logging.error(f"Kotoba-Whisperモデルの読み込み中にエラーが発生しました: {e}")
             raise
 
     def SileroVAD_detect_silence(self, audio_file, threshold=0.5):
-        """Detect silence in an audio file using Silero VAD."""
+        """Silero VADを使用して音声ファイルの無音部分を検出します。"""
         try:
             if not os.path.exists(audio_file):
-                raise FileNotFoundError(f"Audio file not found: {audio_file}")
+                raise FileNotFoundError(f"音声ファイルが見つかりません: {audio_file}")
 
             audio_tensor = self.read_audio(audio_file, sampling_rate=self.sampling_rate)
 
@@ -60,7 +65,7 @@ class AudioComparator:
             )
 
             if not speech_timestamps:
-                print(f"No speech detected in {audio_file}")
+                logging.info(f"{audio_file}で音声が検出されませんでした。")
                 return []
 
             silences = []
@@ -84,39 +89,36 @@ class AudioComparator:
 
             return silences
         except Exception as e:
-            print(f"An error occurred in SileroVAD_detect_silence: {e}")
+            logging.error(f"SileroVAD_detect_silence中でエラーが発生しました: {e}")
             return []
 
     def compute_full_mfcc(self, audio_path):
-        """Compute MFCC for the entire audio file."""
+        """音声ファイル全体のMFCCを計算します。"""
         try:
-            # Load audio file
             waveform, file_sr = torchaudio.load(audio_path)
 
-            # Check if sampling rate conversion is needed
             if file_sr != self.sampling_rate:
                 resampler = torchaudio.transforms.Resample(orig_freq=file_sr, new_freq=self.sampling_rate).to(
                     self.device)
-                waveform = waveform.to(self.device)  # Move to the desired device
+                waveform = waveform.to(self.device)
                 waveform = resampler(waveform)
             else:
-                waveform = waveform.to(self.device)  # Directly move to the device if sampling rate matches
+                waveform = waveform.to(self.device)
 
-            # Compute MFCC
             mfcc = self.mfcc_transform(waveform)
             return mfcc.squeeze(0)
 
         except torch.cuda.OutOfMemoryError as e:
-            print("CUDA Out of Memory Error:", e)
+            logging.error("CUDAメモリ不足エラー:", exc_info=True)
             torch.cuda.empty_cache()
             raise
         except Exception as e:
-            print("An error occurred while computing MFCC:", e)
+            logging.error("MFCC計算中にエラーが発生しました:", exc_info=True)
             raise
 
     def extract_mfcc_block(self, full_mfcc, start, end):
-        """Extract MFCC for a specific time block."""
-        hop_length = 512  # Default hop length
+        """特定の時間ブロックのMFCCを抽出します。"""
+        hop_length = 512  # デフォルトのホップ長
         start_frame = int(start * self.sampling_rate / hop_length)
         end_frame = int(end * self.sampling_rate / hop_length)
         block_mfcc = full_mfcc[:, start_frame:end_frame]
@@ -124,7 +126,7 @@ class AudioComparator:
 
     def kotoba_whisper(self, audio_file, max_segment_duration=30.0):
         """
-        kotoba-Whisperを使用して音声を文字起こし。
+        kotoba-Whisperを使用して音声を文字起こしします。
 
         Parameters:
             audio_file (str): 入力音声ファイルのパス。
@@ -160,19 +162,19 @@ class AudioComparator:
             # セグメントの文字起こしを結合
             return " ".join(transcriptions)
         except Exception as e:
-            print(f"An error occurred in kotoba_whisper: {e}")
+            logging.error(f"kotoba_whisper中でエラーが発生しました: {e}", exc_info=True)
             return ""
 
     def transcribe_blocks(self, audio_file, blocks):
         """
-        Transcribe audio blocks using kotoba-whisper.
+        kotoba-whisperを使用して音声ブロックを文字起こしします。
 
         Parameters:
-            audio_file (str): Path to the audio file.
-            blocks (list): List of blocks with "from" and "to" times.
+            audio_file (str): 音声ファイルのパス。
+            blocks (list): "from" と "to" 時間を含むブロックのリスト。
 
         Returns:
-            list: List of transcribed text for each block.
+            list: 各ブロックの文字起こし結果のリスト。
         """
         transcriptions = []
         try:
@@ -192,19 +194,19 @@ class AudioComparator:
                     "end": block["to"]
                 })
         except Exception as e:
-            print(f"An error occurred in transcribe_blocks: {e}")
+            logging.error(f"transcribe_blocks中でエラーが発生しました: {e}", exc_info=True)
         return transcriptions
 
     def calculate_audio_statistics(self, audio_file, blocks):
         """
-        Calculate audio statistics (average loudness and variance) for the entire audio and each block.
+        音声の統計情報（全体の平均音量と各ブロックの分散）を計算します。
 
         Parameters:
-            audio_file (str): Path to the audio file.
-            blocks (list): List of blocks with "from" and "to" times.
+            audio_file (str): 音声ファイルのパス。
+            blocks (list): "from" と "to" 時間を含むブロックのリスト。
 
         Returns:
-            dict: Average loudness of the entire audio and variance for each block.
+            dict: 全体の平均音量と各ブロックの分散。
         """
         try:
             audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
@@ -227,12 +229,12 @@ class AudioComparator:
                 "block_statistics": block_statistics
             }
         except Exception as e:
-            print(f"An error occurred in calculate_audio_statistics: {e}")
+            logging.error(f"calculate_audio_statistics中でエラーが発生しました: {e}", exc_info=True)
             return {}
 
     def compare_audio_blocks(self, source_audio, clipping_audio, source_blocks, clipping_blocks, initial_threshold=100,
                              threshold_increment=50):
-        """Compare audio blocks between source and clipping audio."""
+        """ソース音声とクリッピング音声の各ブロックを比較します。"""
         try:
             source_full_mfcc = self.compute_full_mfcc(source_audio)
             clipping_full_mfcc = self.compute_full_mfcc(clipping_audio)
@@ -259,7 +261,8 @@ class AudioComparator:
                                 "clip_start": clip_block["from"],
                                 "clip_end": clip_block["to"],
                                 "source_start": source_block["from"],
-                                "source_end": source_block["to"]
+                                "source_end": source_block["to"],
+                                "distance": distance  # distanceを追加
                             })
                             source_index = i + 1
                             match_found = True
@@ -268,36 +271,36 @@ class AudioComparator:
                     if not match_found:
                         current_threshold += threshold_increment
                         if current_threshold > 1000:
-                            print(f"No match found for clip block {j} after raising threshold to {current_threshold}")
+                            logging.warning(f"クリップブロック {j} のマッチが見つかりませんでした。閾値を {current_threshold} まで上げました。")
                             break
 
             # 必ず2つの値を返す
             return matches, current_threshold
         except Exception as e:
-            print(f"An error occurred in compare_audio_blocks: {e}")
+            logging.error(f"compare_audio_blocks中でエラーが発生しました: {e}", exc_info=True)
             return [], initial_threshold
 
     def process_audio(self, source_audio, clipping_audio):
         """
-        Process source and clipping audio to find matching blocks and transcribe them.
+        ソース音声とクリッピング音声を処理して、マッチするブロックを見つけて文字起こしします。
 
         Parameters:
-            source_audio (str): Path to the source audio file.
-            clipping_audio (str): Path to the clipping audio file.
+            source_audio (str): ソース音声ファイルのパス。
+            clipping_audio (str): クリッピング音声ファイルのパス。
 
         Returns:
-            dict: Detailed results including matched blocks and final threshold used.
+            dict: マッチしたブロックと最終的な閾値を含む詳細な結果。
         """
         try:
             source_blocks = self.SileroVAD_detect_silence(source_audio)
             clipping_blocks = self.SileroVAD_detect_silence(clipping_audio)
 
             if not source_blocks:
-                print("No speech blocks detected in source audio.")
+                logging.info("ソース音声で音声ブロックが検出されませんでした。")
                 return {"blocks": [], "current_threshold": 100}
 
             if not clipping_blocks:
-                print("No speech blocks detected in clipping audio.")
+                logging.info("クリッピング音声で音声ブロックが検出されませんでした。")
                 return {"blocks": [], "current_threshold": 100}
 
             transcriptions = self.transcribe_blocks(source_audio, source_blocks)
@@ -317,7 +320,8 @@ class AudioComparator:
                     "source_start": source_block["from"],
                     "source_end": source_block["to"],
                     "text": next((t["text"] for t in transcriptions if t["start"] == source_block["from"]), ""),
-                    "matched": bool(match)
+                    "matched": bool(match),
+                    "distance": match["distance"] if match else None  # distanceを追加
                 })
 
             return {
@@ -325,13 +329,11 @@ class AudioComparator:
                 "current_threshold": final_threshold
             }
         except Exception as e:
-            print(f"An error occurred in process_audio: {e}")
+            logging.error(f"process_audio中でエラーが発生しました: {e}", exc_info=True)
             return {"blocks": [], "current_threshold": 100}
 
 
 if __name__ == "__main__":
-    import pandas as pd
-
     # パスを適切に設定してください
     source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
     clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
@@ -347,14 +349,14 @@ if __name__ == "__main__":
         df = pd.DataFrame(result["blocks"])
         df.to_csv(output_csv, index=False, encoding='utf-8-sig')
 
-        print(f"Transcriptions saved to {output_csv}")
+        logging.info(f"文字起こし結果が {output_csv} に保存されました。")
 
         print("Transcriptions:")
         for block in result["blocks"]:
             print(f"Clip Start: {block['clip_start']}, Clip End: {block['clip_end']}, "
                   f"Source Start: {block['source_start']}, Source End: {block['source_end']}, "
-                  f"Matched: {block['matched']}, Text: {block['text']}")
+                  f"Matched: {block['matched']}, Distance: {block['distance']}, Text: {block['text']}")
     else:
-        print("No matching blocks found or transcription failed.")
+        logging.info("マッチするブロックが見つからないか、文字起こしに失敗しました。")
 
-    print(f"\nFinal Threshold Used: {result['current_threshold']}")
+    logging.info(f"\n最終的な閾値: {result['current_threshold']}")
