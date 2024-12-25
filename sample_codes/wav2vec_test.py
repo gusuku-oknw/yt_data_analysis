@@ -5,8 +5,7 @@ from transformers import Wav2Vec2Processor, Wav2Vec2Model
 import logging
 
 # ロギングの設定
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
-
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Wav2VecAudioComparator:
     def __init__(self, model_name="facebook/wav2vec2-base-960h", sampling_rate=16000):
@@ -14,6 +13,7 @@ class Wav2VecAudioComparator:
         self.model = Wav2Vec2Model.from_pretrained(model_name).eval()
         self.sampling_rate = sampling_rate
 
+        # Silero VADの初期化
         try:
             self.vad_model, self.vad_utils = torch.hub.load(
                 repo_or_dir='snakers4/silero-vad',
@@ -26,104 +26,88 @@ class Wav2VecAudioComparator:
             raise
 
     def SileroVAD_detect_silence(self, audio_path, threshold=0.3):
+        """
+        Silero VADを使用して音声ファイルの無音部分を検出します。
+
+        Parameters:
+            audio_path (str): 音声ファイルのパス。
+            threshold (float): 無音検出のしきい値。
+
+        Returns:
+            list: 音声ブロックのリスト。
+        """
         try:
             if not os.path.exists(audio_path):
                 raise FileNotFoundError(f"音声ファイルが見つかりません: {audio_path}")
 
-            # torchaudioでオーディオを読み込み、モノラルに変換
-            waveform, sr = torchaudio.load(audio_path)
-            logging.debug(f"Loaded waveform shape: {waveform.shape}, Sample rate: {sr}")
-            if sr != self.sampling_rate:
-                resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.sampling_rate)
-                waveform = resampler(waveform)
-                logging.debug(f"Resampled waveform shape: {waveform.shape}, New sample rate: {self.sampling_rate}")
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-                logging.debug(f"Converted to mono. Waveform shape: {waveform.shape}")
-
-            audio_tensor = waveform.squeeze(0)
+            audio_tensor = self.read_audio(audio_path, sampling_rate=self.sampling_rate)
 
             speech_timestamps = self.get_speech_timestamps(
                 audio_tensor, self.vad_model, threshold=threshold, sampling_rate=self.sampling_rate
             )
 
-            logging.debug(f"検出された音声セグメント: {speech_timestamps}")
-
             if not speech_timestamps:
                 logging.info(f"{audio_path}で音声が検出されませんでした。")
                 return []
 
-            # セグメントの時間単位を確認（サンプルインデックスであることを確認）
-            valid_speech_timestamps = []
-            for segment in speech_timestamps:
-                start = segment['start']
-                end = segment['end']
-                if end < start:
-                    logging.warning(f"セグメントのendがstartより小さいです: {segment}")
-                    continue
-                if end - start <= 0:
-                    logging.warning(f"無効なセグメントが検出されました: {segment}")
-                    continue
-                valid_speech_timestamps.append(segment)
-
-            return valid_speech_timestamps
+            return speech_timestamps
         except Exception as e:
             logging.error(f"SileroVAD_detect_silence中でエラーが発生しました: {e}")
             return []
 
     def extract_features(self, audio_path, segment=None):
-        try:
-            waveform, sr = torchaudio.load(audio_path)
-            logging.debug(f"Extract Features - Loaded waveform shape: {waveform.shape}, Sample rate: {sr}")
-            if sr != self.sampling_rate:
-                resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.sampling_rate)
-                waveform = resampler(waveform)
-                logging.debug(f"Extract Features - Resampled waveform shape: {waveform.shape}, New sample rate: {self.sampling_rate}")
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-                logging.debug(f"Extract Features - Converted to mono. Waveform shape: {waveform.shape}")
+        """
+        Wav2Vec 2.0 を使用して音声特徴を抽出します。
 
-            if segment:
-                start_sample = segment['start']
-                end_sample = segment['end']
-                logging.debug(f"セグメント開始サンプル: {start_sample}, 終了サンプル: {end_sample}")
+        Parameters:
+            audio_path (str): 音声ファイルのパス。
+            segment (dict): セグメントの開始と終了時間。
 
-                # サンプルインデックスが波形の範囲内に収まるように調整
-                start_sample = max(0, min(start_sample, waveform.shape[1]))
-                end_sample = max(0, min(end_sample, waveform.shape[1]))
-                logging.debug(f"調整後のセグメント開始サンプル: {start_sample}, 終了サンプル: {end_sample}")
+        Returns:
+            torch.Tensor: 音声特徴ベクトル。
+        """
+        waveform, sr = torchaudio.load(audio_path)
+        if sr != self.sampling_rate:
+            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=self.sampling_rate)
+            waveform = resampler(waveform)
 
-                waveform = waveform[:, start_sample:end_sample]
-                logging.debug(f"Extract Features - Sliced waveform shape: {waveform.shape}")
+        if segment:
+            start_sample = int(segment['start'] * self.sampling_rate)
+            end_sample = int(segment['end'] * self.sampling_rate)
+            waveform = waveform[:, start_sample:end_sample]
 
-            if waveform.shape[1] == 0:
-                raise ValueError("セグメントの長さが0です。処理をスキップします。")
+        input_values = self.processor(waveform.squeeze().numpy(), sampling_rate=self.sampling_rate, return_tensors="pt").input_values
+        with torch.no_grad():
+            features = self.model(input_values).last_hidden_state
 
-            input_values = self.processor(waveform.squeeze().numpy(), sampling_rate=self.sampling_rate,
-                                          return_tensors="pt").input_values
-
-            # 入力値の形状と内容をログに記録
-            logging.debug(f"Input values shape: {input_values.shape}")
-            logging.debug(f"Input values content: {input_values}")
-
-            with torch.no_grad():
-                features = self.model(input_values).last_hidden_state
-
-            return features.squeeze(0)
-        except Exception as e:
-            logging.error(f"extract_features中でエラーが発生しました: {e}")
-            raise
+        return features.squeeze(0)
 
     def compare_audio_features(self, features1, features2, threshold=0.5):
-        try:
-            similarity = torch.nn.functional.cosine_similarity(features1.mean(dim=0), features2.mean(dim=0), dim=0)
-            logging.debug(f"Cosine similarity: {similarity.item()}")
-            return similarity > threshold
-        except Exception as e:
-            logging.error(f"compare_audio_features中でエラーが発生しました: {e}")
-            return False
+        """
+        2つの音声特徴を比較します。
+
+        Parameters:
+            features1 (torch.Tensor): 音声1の特徴ベクトル。
+            features2 (torch.Tensor): 音声2の特徴ベクトル。
+            threshold (float): 類似性のしきい値。
+
+        Returns:
+            bool: 類似しているかどうか。
+        """
+        similarity = torch.nn.functional.cosine_similarity(features1.mean(dim=0), features2.mean(dim=0), dim=0)
+        return similarity > threshold
 
     def process_audio(self, source_audio, clipping_audio):
+        """
+        ソース音声とクリッピング音声を処理し、マッチするブロックを取得します。
+
+        Parameters:
+            source_audio (str): ソース音声ファイルのパス。
+            clipping_audio (str): クリッピング音声ファイルのパス。
+
+        Returns:
+            list: マッチしたブロックの詳細情報を含むリスト。
+        """
         try:
             source_segments = self.SileroVAD_detect_silence(source_audio)
             clipping_segments = self.SileroVAD_detect_silence(clipping_audio)
@@ -138,35 +122,20 @@ class Wav2VecAudioComparator:
 
             matches = []
             for clip_segment in clipping_segments:
-                try:
-                    clip_features = self.extract_features(clipping_audio, segment=clip_segment)
-                except ValueError as e:
-                    logging.warning(f"クリップセグメントの処理をスキップします: {e}")
-                    continue
-                except Exception as e:
-                    logging.error(f"クリップセグメントの特徴抽出中にエラーが発生しました: {e}")
-                    continue
-
+                clip_features = self.extract_features(clipping_audio, segment=clip_segment)
                 match_found = False
 
                 for source_segment in source_segments:
-                    try:
-                        source_features = self.extract_features(source_audio, segment=source_segment)
-                        if self.compare_audio_features(clip_features, source_features, threshold=0.7):
-                            matches.append({
-                                "clip_start": clip_segment['start'],
-                                "clip_end": clip_segment['end'],
-                                "source_start": source_segment['start'],
-                                "source_end": source_segment['end']
-                            })
-                            match_found = True
-                            break
-                    except ValueError as e:
-                        logging.warning(f"ソースセグメントの処理をスキップします: {e}")
-                        continue
-                    except Exception as e:
-                        logging.error(f"ソースセグメントの特徴抽出中にエラーが発生しました: {e}")
-                        continue
+                    source_features = self.extract_features(source_audio, segment=source_segment)
+                    if self.compare_audio_features(clip_features, source_features, threshold=0.7):
+                        matches.append({
+                            "clip_start": clip_segment['start'],
+                            "clip_end": clip_segment['end'],
+                            "source_start": source_segment['start'],
+                            "source_end": source_segment['end']
+                        })
+                        match_found = True
+                        break
 
                 if not match_found:
                     logging.info(f"クリップセグメント {clip_segment} のマッチが見つかりませんでした。")
@@ -175,7 +144,6 @@ class Wav2VecAudioComparator:
         except Exception as e:
             logging.error(f"process_audio中でエラーが発生しました: {e}", exc_info=True)
             return []
-
 
 if __name__ == "__main__":
     source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
@@ -187,16 +155,6 @@ if __name__ == "__main__":
     if result:
         print("マッチしたブロック:")
         for block in result:
-            # サンプルインデックスを秒に変換して表示
-            clip_start_sec = block["clip_start"] / comparator.sampling_rate
-            clip_end_sec = block["clip_end"] / comparator.sampling_rate
-            source_start_sec = block["source_start"] / comparator.sampling_rate
-            source_end_sec = block["source_end"] / comparator.sampling_rate
-            print({
-                "clip_start_sec": clip_start_sec,
-                "clip_end_sec": clip_end_sec,
-                "source_start_sec": source_start_sec,
-                "source_end_sec": source_end_sec
-            })
+            print(block)
     else:
         print("マッチするブロックが見つかりませんでした。")
