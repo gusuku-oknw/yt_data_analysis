@@ -71,9 +71,10 @@ def detect_silence(audio_path, sampling_rate=16000, threshold=0.5):
 
     return silences
 
-def split_audio_with_silence(audio_path, sampling_rate=16000, threshold=0.5, min_segment_length=0.1):
+def split_audio_with_silence(audio_path, sampling_rate=16000, threshold=0.5, min_segment_length=5.0):
     """
     音声を無音部分で分割し、最小長さを満たすセグメントのみを保持します。
+    5秒以下のセグメントは統合します。
 
     Args:
         audio_path (str): Path to the audio file.
@@ -87,25 +88,52 @@ def split_audio_with_silence(audio_path, sampling_rate=16000, threshold=0.5, min
     silences = detect_silence(audio_path, sampling_rate=sampling_rate, threshold=threshold)
     audio_tensor = read_audio(audio_path, sampling_rate=sampling_rate)
     segments = []
+    segment_times = []
 
     last_end = 0
+    temp_segment = []
+    temp_start_time = 0
+
     for silence in silences:
         start_sample = int(last_end * sampling_rate)
         end_sample = int(silence["from"] * sampling_rate)
         segment = audio_tensor[start_sample:end_sample]
-        # 最小長さを確認
-        if len(segment) / sampling_rate >= min_segment_length:
-            segments.append(segment.numpy())
+
+        # 一時セグメントに追加
+        temp_segment.append(segment)
+        total_length = sum([seg.shape[0] for seg in temp_segment]) / sampling_rate
+
+        # セグメント長が十分か確認
+        if total_length >= min_segment_length:
+            merged_segment = torch.cat(temp_segment)
+            segments.append(merged_segment.numpy())
+            segment_times.append((temp_start_time, last_end))
+            temp_segment = []
+            temp_start_time = silence["to"]
+
         last_end = silence["to"]
 
-    # 最後のセグメントを確認
+    # 残りのセグメントを確認
+    if temp_segment:
+        merged_segment = torch.cat(temp_segment)
+        segments.append(merged_segment.numpy())
+        segment_times.append((temp_start_time, last_end))
+
     if last_end < audio_tensor.shape[-1] / sampling_rate:
         start_sample = int(last_end * sampling_rate)
         segment = audio_tensor[start_sample:]
-        if len(segment) / sampling_rate >= min_segment_length:
+        if segment.shape[0] / sampling_rate >= min_segment_length:
             segments.append(segment.numpy())
+            segment_times.append((last_end, audio_tensor.shape[-1] / sampling_rate))
+        else:
+            if segments:
+                segments[-1] = torch.cat([torch.tensor(segments[-1]), segment]).numpy()
+                segment_times[-1] = (segment_times[-1][0], audio_tensor.shape[-1] / sampling_rate)
+            else:
+                segments.append(segment.numpy())
+                segment_times.append((last_end, audio_tensor.shape[-1] / sampling_rate))
 
-    return segments
+    return segments, segment_times
 
 def calculate_similarity(segment1, segment2, sampling_rate=16000):
     """
@@ -152,21 +180,21 @@ def find_closest_segments(audio_path1, audio_path2, sampling_rate=16000, thresho
     Returns:
         list: List of closest segment pairs with their times.
     """
-    segments1 = split_audio_with_silence(audio_path1, sampling_rate=sampling_rate, threshold=threshold)
-    segments2 = split_audio_with_silence(audio_path2, sampling_rate=sampling_rate, threshold=threshold)
+    segments1, times1 = split_audio_with_silence(audio_path1, sampling_rate=sampling_rate, threshold=threshold)
+    segments2, times2 = split_audio_with_silence(audio_path2, sampling_rate=sampling_rate, threshold=threshold)
 
     closest_pairs = []
 
-    for i, seg1 in enumerate(segments1):
+    for j, seg2 in enumerate(segments2):
         best_match = None
         best_similarity = -1
-        for j, seg2 in enumerate(segments2):
+        for i, seg1 in enumerate(segments1):
             similarity = calculate_similarity(seg1, seg2, sampling_rate=sampling_rate)
             if similarity > best_similarity:
                 best_similarity = similarity
-                best_match = (j, similarity)
+                best_match = (i, similarity)
         if best_match:
-            closest_pairs.append((i, best_match[0], best_similarity))
+            closest_pairs.append((best_match[0], j, best_match[1], times1[best_match[0]], times2[j]))
 
     return closest_pairs
 
@@ -179,5 +207,5 @@ if __name__ == "__main__":
     closest_segments = find_closest_segments(source_audio_file, clip_audio_file)
 
     # 結果を出力
-    for seg1_idx, seg2_idx, similarity in closest_segments:
-        print(f"Source Segment {seg1_idx} is closest to Clip Segment {seg2_idx} with similarity {similarity:.4f}")
+    for seg1_idx, seg2_idx, similarity, time1, time2 in closest_segments:
+        print(f"Clip Segment {seg2_idx} (time: {time2[0]:.2f}s-{time2[1]:.2f}s) is closest to Source Segment {seg1_idx} (time: {time1[0]:.2f}s-{time1[1]:.2f}s) with similarity {similarity:.4f}")
