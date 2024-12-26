@@ -21,7 +21,7 @@ class WavLMAnalyzer:
         self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(model_name)
         self.model = WavLMForXVector.from_pretrained(model_name).to(self.device)
 
-    def detect_silence(self, audio_input: Union[str, torch.Tensor], threshold: float = 0.4) -> List[Dict[str, float]]:
+    def detect_silence(self, audio_input: Union[str, torch.Tensor], threshold: float = 0.6) -> List[Dict[str, float]]:
         """Silero VAD を用いて無音区間を検出"""
         try:
             model, utils = torch.hub.load(
@@ -68,7 +68,7 @@ class WavLMAnalyzer:
             traceback.print_exc()
             return []
 
-    def split_audio(self, audio_tensor: torch.Tensor, silences: List[Dict[str, float]], min_length: float = 10.0) -> \
+    def split_audio(self, audio_tensor: torch.Tensor, silences: List[Dict[str, float]], min_length: float = 5.0) -> \
     Tuple[List[torch.Tensor], List[Tuple[float, float]]]:
         """無音区間で音声を分割し、最小長を満たさない場合は次のセグメントと合成する"""
         segments = []
@@ -126,15 +126,14 @@ class WavLMAnalyzer:
         return cosine_sim(embeddings[0], embeddings[1]).item()
 
 
-    def find_closest_segments(self, audio1: torch.Tensor, audio2: torch.Tensor, similarity_threshold: float = 0.9) -> List[
-        Tuple[int, int, float, Tuple[float, float], Tuple[float, float]]]:
+    def find_closest_segments(self, clip: torch.Tensor, source: torch.Tensor, similarity_threshold: float = 0.9) -> List[Tuple[int, int, float, Tuple[float, float], Tuple[float, float]]]:
         """2つの音声間で最も類似したセグメントを検索
 
             Parameters
             ----------
-            audio1 : torch.Tensor
+            clip : torch.Tensor
                 比較対象の音声データ1
-            audio2 : torch.Tensor
+            source : torch.Tensor
                 比較対象の音声データ2
             similarity_threshold : float
                 類似度の閾値。この値以上のセグメントペアのみを返す
@@ -150,12 +149,12 @@ class WavLMAnalyzer:
                 - セグメント2の開始・終了時間
             """
         # 無音区間を検出
-        silences1 = self.detect_silence(audio1)
-        silences2 = self.detect_silence(audio2)
+        silences1 = self.detect_silence(clip, threshold=0.4)
+        silences2 = self.detect_silence(source)
 
         # 音声を無音区間で分割
-        segments1, times1 = self.split_audio(audio1, silences1)
-        segments2, times2 = self.split_audio(audio2, silences2)
+        segments1, times1 = self.split_audio(clip, silences1)
+        segments2, times2 = self.split_audio(source, silences2)
 
         closest_pairs = []
         # 各セグメントについて最も類似したペアを探索
@@ -174,7 +173,7 @@ class WavLMAnalyzer:
 
             # 閾値以上の類似度を持つペアのみを保存
             if best_similarity >= similarity_threshold:
-                closest_pairs.append((best_match, i, best_similarity, best_time, time2))
+                closest_pairs.append((i, best_match, best_similarity, time2, best_time))
 
         return closest_pairs
 
@@ -228,5 +227,5 @@ if __name__ == "__main__":
     closest_segments = analyzer.find_closest_segments(torch.tensor(clip_audio), torch.tensor(source_audio))
 
     # 結果を出力
-    for seg1_idx, seg2_idx, similarity, time1, time2 in closest_segments:
-        print(f"Clip Segment {seg1_idx} (time: {analyzer.format_time(time1[0])}-{analyzer.format_time(time1[1])}) is closest to Source Segment {seg2_idx} (time: {analyzer.format_time(time2[0])}-{analyzer.format_time(time2[1])}) with similarity {similarity:.4f}")
+    for seg2_idx, seg1_idx, similarity, time2, time1 in closest_segments:
+        print(f"Clip Segment {seg2_idx} (time: {analyzer.format_time(time2[0])}-{analyzer.format_time(time2[1])}) is closest to Source Segment {seg1_idx} (time: {analyzer.format_time(time1[0])}-{analyzer.format_time(time1[1])}) with similarity {similarity:.4f}")
