@@ -4,6 +4,8 @@ import librosa
 import os
 import logging
 from itertools import product
+from datetime import timedelta
+from tqdm import tqdm
 
 # モデル名
 model_name = "microsoft/wavlm-base-plus-sv"
@@ -74,7 +76,7 @@ def detect_silence(audio_path, sampling_rate=16000, threshold=0.5):
 def split_audio_with_silence(audio_path, sampling_rate=16000, threshold=0.5, min_segment_length=5.0):
     """
     音声を無音部分で分割し、最小長さを満たすセグメントのみを保持します。
-    5秒以下のセグメントは統合します。
+    5秒以下のセグメントは次のセグメントと統合します。
 
     Args:
         audio_path (str): Path to the audio file.
@@ -94,7 +96,7 @@ def split_audio_with_silence(audio_path, sampling_rate=16000, threshold=0.5, min
     temp_segment = []
     temp_start_time = 0
 
-    for silence in silences:
+    for silence in tqdm(silences):
         start_sample = int(last_end * sampling_rate)
         end_sample = int(silence["from"] * sampling_rate)
         segment = audio_tensor[start_sample:end_sample]
@@ -113,25 +115,29 @@ def split_audio_with_silence(audio_path, sampling_rate=16000, threshold=0.5, min
 
         last_end = silence["to"]
 
-    # 残りのセグメントを確認
+    # 残りのセグメントを確認し、次のセグメントと統合
     if temp_segment:
         merged_segment = torch.cat(temp_segment)
-        segments.append(merged_segment.numpy())
-        segment_times.append((temp_start_time, last_end))
+        if segments and len(segments[-1]) / sampling_rate < min_segment_length:
+            segments[-1] = torch.cat([torch.tensor(segments[-1]), merged_segment]).numpy()
+            segment_times[-1] = (segment_times[-1][0], last_end)
+        else:
+            segments.append(merged_segment.numpy())
+            segment_times.append((temp_start_time, last_end))
 
-    if last_end < audio_tensor.shape[-1] / sampling_rate:
+    if last_end < len(audio_tensor) / sampling_rate:
         start_sample = int(last_end * sampling_rate)
         segment = audio_tensor[start_sample:]
-        if segment.shape[0] / sampling_rate >= min_segment_length:
+        if len(segment) / sampling_rate >= min_segment_length:
             segments.append(segment.numpy())
-            segment_times.append((last_end, audio_tensor.shape[-1] / sampling_rate))
+            segment_times.append((last_end, len(audio_tensor) / sampling_rate))
         else:
             if segments:
                 segments[-1] = torch.cat([torch.tensor(segments[-1]), segment]).numpy()
-                segment_times[-1] = (segment_times[-1][0], audio_tensor.shape[-1] / sampling_rate)
+                segment_times[-1] = (segment_times[-1][0], len(audio_tensor) / sampling_rate)
             else:
                 segments.append(segment.numpy())
-                segment_times.append((last_end, audio_tensor.shape[-1] / sampling_rate))
+                segment_times.append((last_end, len(audio_tensor) / sampling_rate))
 
     return segments, segment_times
 
@@ -167,9 +173,21 @@ def calculate_similarity(segment1, segment2, sampling_rate=16000):
 
     return cosine_sim(embeddings[0], embeddings[1]).item()
 
-def find_closest_segments(audio_path1, audio_path2, sampling_rate=16000, threshold=0.5):
+def format_time(seconds):
     """
-    Find the closest segment pairs between two audio files and return their times.
+    秒を時間:分:秒の形式に変換します。
+
+    Args:
+        seconds (float): 秒数。
+
+    Returns:
+        str: 時間:分:秒形式の文字列。
+    """
+    return str(timedelta(seconds=round(seconds)))
+
+def find_closest_segments_continuous(audio_path1, audio_path2, sampling_rate=16000, threshold=0.5):
+    """
+    Find the closest segment pairs between two audio files with continuity in matching.
 
     Args:
         audio_path1 (str): Path to the first audio file.
@@ -184,28 +202,43 @@ def find_closest_segments(audio_path1, audio_path2, sampling_rate=16000, thresho
     segments2, times2 = split_audio_with_silence(audio_path2, sampling_rate=sampling_rate, threshold=threshold)
 
     closest_pairs = []
+    used_segments = set()
 
-    for j, seg2 in enumerate(segments2):
+    for j, (seg2, time2) in tqdm(enumerate(zip(segments2, times2))):
         best_match = None
         best_similarity = -1
-        for i, seg1 in enumerate(segments1):
+
+        # 過去に使用されたソースセグメントをスキップ
+        for i, (seg1, time1) in (enumerate(zip(segments1, times1))):
+            if i in used_segments:
+                continue
+
             similarity = calculate_similarity(seg1, seg2, sampling_rate=sampling_rate)
             if similarity > best_similarity:
                 best_similarity = similarity
                 best_match = (i, similarity)
-        if best_match:
-            closest_pairs.append((best_match[0], j, best_match[1], times1[best_match[0]], times2[j]))
+
+        if best_match and best_similarity >= 0.90:
+            closest_pairs.append((best_match[0], j, best_match[1], times1[best_match[0]], time2))
+            used_segments.add(best_match[0])  # このソースセグメントを使用済みとマーク
 
     return closest_pairs
 
 if __name__ == "__main__":
     # 音声ファイルのパス
-    source_audio_file = "../data/audio/source/Y1VQdn2pmgo.mp3"
-    clip_audio_file = "../data/audio/clipping/qqxKJFDeNHg.mp3"
+    source_audio_file = "../data/audio/source/pnHdRQbR2zs.mp3"
+    clip_audio_file = "../data/audio/clipping/-bRcKCM5_3E.mp3"
+
+    # サンプリングレートを指定してロード
+    source_audio, source_sr = librosa.load(source_audio_file, sr=16000)
+    clip_audio, clip_sr = librosa.load(clip_audio_file, sr=16000)
+
+    # サンプリングレートの一致確認
+    assert source_sr == clip_sr, "Source and clip audio files must have the same sampling rate!"
 
     # 無音部分での分割と最も近いセグメントの検索
-    closest_segments = find_closest_segments(source_audio_file, clip_audio_file)
+    closest_segments = find_closest_segments_continuous(source_audio_file, clip_audio_file, sampling_rate=source_sr)
 
     # 結果を出力
     for seg1_idx, seg2_idx, similarity, time1, time2 in closest_segments:
-        print(f"Clip Segment {seg2_idx} (time: {time2[0]:.2f}s-{time2[1]:.2f}s) is closest to Source Segment {seg1_idx} (time: {time1[0]:.2f}s-{time1[1]:.2f}s) with similarity {similarity:.4f}")
+        print(f"Clip Segment {seg2_idx} (time: {format_time(time2[0])}-{format_time(time2[1])}) is closest to Source Segment {seg1_idx} (time: {format_time(time1[0])}-{format_time(time1[1])}) with similarity {similarity:.4f}")
