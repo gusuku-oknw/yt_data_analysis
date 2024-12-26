@@ -1,3 +1,5 @@
+import subprocess
+
 from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector
 import torch
 import librosa
@@ -8,7 +10,7 @@ from datetime import timedelta
 from tqdm import tqdm
 
 # モデル名
-model_name = "microsoft/wavlm-base-plus-sv"
+model_name = "microsoft/wavlm-large"
 
 # デバイス設定 (GPUが利用可能であれば使用)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -33,22 +35,18 @@ def load_silero_vad():
 
 vad_model, get_speech_timestamps, read_audio = load_silero_vad()
 
-def detect_silence(audio_path, sampling_rate=16000, threshold=0.5):
+def detect_silence(audio_tensor, sampling_rate=16000, threshold=0.5):
     """
     Silero VADを使用して無音部分を検出します。
 
     Args:
-        audio_path (str): Path to the audio file.
-        sampling_rate (int): Sampling rate of the audio.
-        threshold (float): VAD threshold.
+        audio_tensor (torch.Tensor): 音声データ。
+        sampling_rate (int): サンプリングレート。
+        threshold (float): VADのしきい値。
 
     Returns:
-        list: List of silent segments with start and end times.
+        list: 無音部分のリスト（開始時刻と終了時刻）。
     """
-    if not os.path.exists(audio_path):
-        raise FileNotFoundError(f"音声ファイルが見つかりません: {audio_path}")
-
-    audio_tensor = read_audio(audio_path, sampling_rate=sampling_rate)
     speech_timestamps = get_speech_timestamps(audio_tensor, vad_model, threshold=threshold, sampling_rate=sampling_rate)
 
     silences = []
@@ -73,22 +71,20 @@ def detect_silence(audio_path, sampling_rate=16000, threshold=0.5):
 
     return silences
 
-def split_audio_with_silence(audio_path, sampling_rate=16000, threshold=0.5, min_segment_length=5.0):
+def split_audio_with_silence(audio_tensor, sampling_rate=16000, threshold=0.5, min_segment_length=3.0):
     """
     音声を無音部分で分割し、最小長さを満たすセグメントのみを保持します。
-    5秒以下のセグメントは次のセグメントと統合します。
 
     Args:
-        audio_path (str): Path to the audio file.
-        sampling_rate (int): Sampling rate of the audio.
-        threshold (float): VAD threshold.
-        min_segment_length (float): Minimum segment length in seconds.
+        audio_tensor (torch.Tensor): 音声データ。
+        sampling_rate (int): サンプリングレート。
+        threshold (float): VADのしきい値。
+        min_segment_length (float): 最小セグメント長（秒）。
 
     Returns:
-        list: List of audio segments.
+        list: 分割された音声セグメント。
     """
-    silences = detect_silence(audio_path, sampling_rate=sampling_rate, threshold=threshold)
-    audio_tensor = read_audio(audio_path, sampling_rate=sampling_rate)
+    silences = detect_silence(audio_tensor, sampling_rate=sampling_rate, threshold=threshold)
     segments = []
     segment_times = []
 
@@ -173,6 +169,77 @@ def calculate_similarity(segment1, segment2, sampling_rate=16000):
 
     return cosine_sim(embeddings[0], embeddings[1]).item()
 
+def find_closest_segments_continuous(audio1, audio2, sampling_rate=16000, threshold=0.5):
+    """
+    Find the closest segment pairs between two audio files with continuity in matching.
+
+    Args:
+        audio1 (torch.Tensor): 1つ目の音声データ。
+        audio2 (torch.Tensor): 2つ目の音声データ。
+        sampling_rate (int): サンプリングレート。
+        threshold (float): VADのしきい値。
+
+    Returns:
+        list: もっとも近いセグメントペア。
+    """
+    segments1, times1 = split_audio_with_silence(audio1, sampling_rate=sampling_rate, threshold=threshold)
+    segments2, times2 = split_audio_with_silence(audio2, sampling_rate=sampling_rate, threshold=threshold)
+
+    closest_pairs = []
+
+    for j, (seg2, time2) in tqdm(enumerate(zip(segments2, times2))):
+        best_match = None
+        best_similarity = -1
+
+        for i, (seg1, time1) in enumerate(zip(segments1, times1)):
+            similarity = calculate_similarity(seg1, seg2, sampling_rate=sampling_rate)
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_match = (i, similarity)
+
+        if best_match and best_similarity >= 0.90:
+            closest_pairs.append((best_match[0], j, best_match[1], times1[best_match[0]], time2))
+
+    return closest_pairs
+
+def extract_vocals(audio_file):
+    """
+    指定された音声ファイルからボーカルを抽出する。
+    既にボーカルファイルが存在する場合はスキップ。
+    """
+    try:
+        root_directory = os.path.dirname(audio_file)
+        basename = os.path.splitext(os.path.basename(audio_file))[0]
+        vocals_path = f"{root_directory}/htdemucs/{basename}/vocals.wav"
+
+        # 既存ファイルのチェック
+        if os.path.exists(vocals_path):
+            print(f"ボーカルファイルが既に存在します: {vocals_path}")
+            return vocals_path
+
+        # ボーカル抽出を実行
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        print(f"Demucsを実行中 (デバイス: {device})...")
+
+        command = ['demucs', '-d', device, '-o', root_directory, audio_file]
+        subprocess.run(command, check=True)
+
+        # ファイルの存在を再確認
+        if os.path.exists(vocals_path):
+            print(f"ボーカルファイルが生成されました: {vocals_path}")
+            return vocals_path
+        else:
+            raise FileNotFoundError(f"ボーカルファイルが生成されませんでした: {vocals_path}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"Demucs 実行中にエラーが発生しました: {e}")
+    except FileNotFoundError as e:
+        print(f"Demucs が見つかりません。インストールされていることを確認してください: {e}")
+    except Exception as e:
+        print(f"予期しないエラーが発生しました: {e}")
+
+    return None
+
 def format_time(seconds):
     """
     秒を時間:分:秒の形式に変換します。
@@ -185,49 +252,13 @@ def format_time(seconds):
     """
     return str(timedelta(seconds=round(seconds)))
 
-def find_closest_segments_continuous(audio_path1, audio_path2, sampling_rate=16000, threshold=0.5):
-    """
-    Find the closest segment pairs between two audio files with continuity in matching.
-
-    Args:
-        audio_path1 (str): Path to the first audio file.
-        audio_path2 (str): Path to the second audio file.
-        sampling_rate (int): Sampling rate of the audio.
-        threshold (float): VAD threshold.
-
-    Returns:
-        list: List of closest segment pairs with their times.
-    """
-    segments1, times1 = split_audio_with_silence(audio_path1, sampling_rate=sampling_rate, threshold=threshold)
-    segments2, times2 = split_audio_with_silence(audio_path2, sampling_rate=sampling_rate, threshold=threshold)
-
-    closest_pairs = []
-    used_segments = set()
-
-    for j, (seg2, time2) in tqdm(enumerate(zip(segments2, times2))):
-        best_match = None
-        best_similarity = -1
-
-        # 過去に使用されたソースセグメントをスキップ
-        for i, (seg1, time1) in (enumerate(zip(segments1, times1))):
-            if i in used_segments:
-                continue
-
-            similarity = calculate_similarity(seg1, seg2, sampling_rate=sampling_rate)
-            if similarity > best_similarity:
-                best_similarity = similarity
-                best_match = (i, similarity)
-
-        if best_match and best_similarity >= 0.90:
-            closest_pairs.append((best_match[0], j, best_match[1], times1[best_match[0]], time2))
-            used_segments.add(best_match[0])  # このソースセグメントを使用済みとマーク
-
-    return closest_pairs
 
 if __name__ == "__main__":
     # 音声ファイルのパス
     source_audio_file = "../data/audio/source/pnHdRQbR2zs.mp3"
     clip_audio_file = "../data/audio/clipping/-bRcKCM5_3E.mp3"
+
+    clip_audio_file = extract_vocals(clip_audio_file)
 
     # サンプリングレートを指定してロード
     source_audio, source_sr = librosa.load(source_audio_file, sr=16000)
@@ -237,7 +268,7 @@ if __name__ == "__main__":
     assert source_sr == clip_sr, "Source and clip audio files must have the same sampling rate!"
 
     # 無音部分での分割と最も近いセグメントの検索
-    closest_segments = find_closest_segments_continuous(source_audio_file, clip_audio_file, sampling_rate=source_sr)
+    closest_segments = find_closest_segments_continuous(torch.tensor(source_audio), torch.tensor(clip_audio), sampling_rate=source_sr)
 
     # 結果を出力
     for seg1_idx, seg2_idx, similarity, time1, time2 in closest_segments:
