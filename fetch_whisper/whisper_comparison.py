@@ -145,13 +145,13 @@ class WhisperComparison:
         return all_transcribed_segments
 
     # ==========================================
-    # 以下、テキスト比較に関わる関数 (お好みで)
+    # 以下、テキスト比較に関わる関数
     # ==========================================
 
     def preprocess_text(self, text):
         """テキストの前処理（スペース削除、記号削除など）"""
-        text = re.sub(r'\s+', '', text)  # 連続する空白の削除
-        text = re.sub(r'[^\w\s]', '', text)  # 記号削除
+        text = re.sub(r'\s+', '', text)     # 連続する空白の削除
+        text = re.sub(r'[^\w\s]', '', text) # 記号削除
         return text
 
     def tokenize_japanese(self, text):
@@ -160,7 +160,12 @@ class WhisperComparison:
         return tokens
 
     def calculate_similarity(self, text1, text2, method="sequence"):
-        """与えられた2つのテキスト間の類似度を計算"""
+        """
+        与えられた2つのテキスト間の類似度を計算。
+        method に "another_method" が指定された場合は、
+        例として単純な単語数の差をベースにしたダミー類似度など、
+        別のロジックが動くようにしています。
+        """
         text1 = self.preprocess_text(text1)
         text2 = self.preprocess_text(text2)
 
@@ -188,20 +193,28 @@ class WhisperComparison:
             except ValueError:
                 return 0.0
 
+        elif method == "another_method":
+            # 例: 別のモデルやロジックを使うという想定のダミー実装
+            # 実際には他の音声認識モデル／NLPモデルの呼び出しなどに置き換えてください。
+            len_diff = abs(len(text1) - len(text2))
+            # 長さが似ていれば類似度が高いというテキトーな例
+            sim = 1.0 - (len_diff / max(len(text1), len(text2)))
+            return max(0.0, min(sim, 1.0))
+
         else:
-            raise ValueError("Unsupported similarity method")
+            raise ValueError(f"Unsupported similarity method: {method}")
 
     def find_best_match(self, segment, source_segments, used_segments,
-                        threshold=0.8, method="tfidf"):
+                        threshold=0.8, method="sequence"):
         """
         1つの切り抜きセグメント `segment` に対して、
         最も類似度が高いかつ threshold 以上を満たす元動画セグメントを探す。
+        既にused_segmentsに登録されたstart秒のソースは再利用しない。
         """
         best_match = None
-        max_similarity = 0
+        max_similarity = 0.0
 
         for src in source_segments:
-            # すでに使用したセグメントはスキップ
             if src["start"] in used_segments:
                 continue
 
@@ -210,109 +223,148 @@ class WhisperComparison:
                 best_match = src
                 max_similarity = similarity
 
-        return best_match
+        return best_match, max_similarity
 
     def compare_segments(self, clipping_segments, source_segments,
-                         initial_threshold=0.8, fast_method="sequence",
+                         initial_threshold=0.8,
+                         fast_method="sequence",
                          slow_method="tfidf"):
         """
         切り抜きセグメント(clipping_segments)と元動画セグメント(source_segments)を比較し、
         まず fast_method でマッチングを試み、マッチしなかったものは slow_method で再マッチング。
+
+        変更点:
+        1) しきい値未満なら別のモデル (another_method) を呼ぶ
+        2) 一致したソースは除外 (再利用しない)
+        3) 文字数の多い順にクリップを比較
         """
+
+        # 文字数の多いクリップから処理する
+        # reverse=True で降順ソート
+        clipping_segments = sorted(clipping_segments, key=lambda x: len(x["text"]), reverse=True)
+
         matches = []
         unmatched = []
-        used_segments = set()
+        used_segments = set()  # ここにマッチ済みソースのstart秒を記録して再利用を防ぐ
 
-        def process_clip(clip, method):
-            try:
-                threshold = initial_threshold
-                found_match = False
-                clip_matches = []
-
-                # もしテキストが長い場合は50文字ごとに分割（必要に応じて調整）
+        # 処理を行う関数（fast / slow 共通）
+        def process_clip(clip, method, threshold):
+            """
+            1つのclipに対して指定methodでマッチングを試みる。
+            - threshold を下回る場合は "another_method" で再試行する。
+            - 最初にマッチしたら終了。
+            """
+            # テキストが長い場合の分割（例: 50文字区切り） --- 必要に応じて可変
+            if len(clip["text"]) > 50:
+                long_segments = [
+                    clip["text"][i:i + 50]
+                    for i in range(0, len(clip["text"]), 50)
+                ]
+            else:
                 long_segments = [clip["text"]]
-                if len(clip["text"]) > 50:
-                    long_segments = [
-                        clip["text"][i:i + 50]
-                        for i in range(0, len(clip["text"]), 50)
-                    ]
-                # 空白だけのセグメントは除外
-                long_segments = [seg for seg in long_segments if seg.strip()]
 
-                # 分割したテキストブロックごとにマッチングを試す
-                for segment_text in long_segments:
-                    local_threshold = threshold
-                    while local_threshold > 0.1:
-                        candidate = {
-                            "text": segment_text,
-                            "start": clip["start"],
-                            "end": clip["end"]
-                        }
-                        best = self.find_best_match(candidate, source_segments,
-                                                    used_segments,
-                                                    threshold=local_threshold,
-                                                    method=method)
-                        if best:
-                            similarity_score = self.calculate_similarity(segment_text, best["text"], method=method)
-                            clip_matches.append({
-                                "clip_text": segment_text,
-                                "clip_start": clip["start"],
-                                "clip_end": clip["end"],
-                                "source_text": best["text"],
-                                "source_start": best["start"],
-                                "source_end": best["end"],
-                                "similarity": similarity_score,
-                            })
-                            used_segments.add(best["start"])
-                            found_match = True
-                            break
+            # 空白だけの区切りはスキップ
+            long_segments = [seg for seg in long_segments if seg.strip()]
+
+            matched_infos = []
+            found_match_any = False
+
+            for seg_text in long_segments:
+                # 分割テキストごとに閾値を下げながら探す例
+                local_threshold = threshold
+                while local_threshold > 0.1:
+                    candidate = {"text": seg_text, "start": clip["start"], "end": clip["end"]}
+                    best, sim_score = self.find_best_match(candidate, source_segments,
+                                                           used_segments, local_threshold, method)
+                    if best:
+                        # マッチがあれば情報をまとめて記録
+                        matched_infos.append({
+                            "clip_text": seg_text,
+                            "clip_start": clip["start"],
+                            "clip_end": clip["end"],
+                            "source_text": best["text"],
+                            "source_start": best["start"],
+                            "source_end": best["end"],
+                            "similarity": sim_score,
+                        })
+                        # 使い終わったソースは再利用しないように登録
+                        used_segments.add(best["start"])
+                        # 必要なら source_segments からも除外（再度使用しない）
+                        # ※ スレッドセーフでないためマルチスレッドだと注意が必要
+                        if best in source_segments:
+                            source_segments.remove(best)
+                        found_match_any = True
+                        break
+                    else:
                         local_threshold -= 0.05
 
-                if not found_match:
-                    # このクリップセグメントはマッチングできなかった
-                    return {
-                        "clip_text": clip["text"],
-                        "clip_start": clip["start"],
-                        "clip_end": clip["end"],
-                        "matched": False
-                    }
+                # しきい値を下げても見つからなかった場合は別のモデルへ
+                if not found_match_any:
+                    candidate = {"text": seg_text, "start": clip["start"], "end": clip["end"]}
+                    best, sim_score = self.find_best_match(candidate, source_segments,
+                                                           used_segments, 0.0,  # とりあえず0に
+                                                           "another_method")
+                    if best and sim_score >= 0.1:
+                        # "another_method" で何かしら見つかったと仮定
+                        matched_infos.append({
+                            "clip_text": seg_text,
+                            "clip_start": clip["start"],
+                            "clip_end": clip["end"],
+                            "source_text": best["text"],
+                            "source_start": best["start"],
+                            "source_end": best["end"],
+                            "similarity": sim_score,
+                        })
+                        used_segments.add(best["start"])
+                        if best in source_segments:
+                            source_segments.remove(best)
+                        found_match_any = True
 
-                return {"matches": clip_matches, "matched": True}
+            if found_match_any:
+                return {
+                    "matches": matched_infos,
+                    "matched": True
+                }
+            else:
+                # 何もマッチングできなかった
+                return {
+                    "clip_text": clip["text"],
+                    "clip_start": clip["start"],
+                    "clip_end": clip["end"],
+                    "matched": False
+                }
 
-            except Exception as e:
-                logging.error(f"Error processing clip: {clip.get('text', 'Unknown')}, {e}")
-                return {"error": str(e), "matched": False}
-
-        # Step 1: fast_method でのマッチング
+        # ------------------------------
+        #   Step 1: fast_method でのマッチング
+        # ------------------------------
         logging.info("Fast methodでのマッチングを実行中...")
-        with ThreadPoolExecutor() as executor:
-            futures = {
-                executor.submit(process_clip, clip, fast_method): clip
-                for clip in clipping_segments
-            }
 
-            for future in tqdm(as_completed(futures),
-                               total=len(clipping_segments),
-                               desc="Comparing segments (fast_method)"):
-                result = future.result()
-                if result.get("matched"):
-                    matches.append(result["matches"])
-                else:
-                    unmatched.append(result)
+        # 並列化したい場合はThreadPoolExecutorを使うが、
+        # ソースセグメントの「削除操作」などがあるため注意。
+        # ここではシンプルにシングルスレッドで実行する例を示す。
+        for clip in clipping_segments:
+            result = process_clip(clip, fast_method, initial_threshold)
+            if result.get("matched"):
+                matches.append(result["matches"])
+            else:
+                # fast_methodでマッチしなかった場合リストに残す
+                unmatched.append(result)
 
-        # Step 2: slow_method での再マッチング (unmatched のみ)
+        # ------------------------------
+        #   Step 2: slow_method で再マッチング
+        # ------------------------------
         if unmatched:
             logging.info("Unmatchedに対してslow methodでのマッチングを実行中...")
             still_unmatched = []
-            with ThreadPoolExecutor() as executor:
-                futures = {
-                    executor.submit(process_clip, u, slow_method): u
-                    for u in unmatched
-                }
-                for future in tqdm(as_completed(futures),
-                                   total=len(unmatched),
-                                   desc="Comparing segments (slow_method)"):
-                    result = future.result()
+            for u in unmatched:
+                # すでに matched=False のやつのみ
+                if not u["matched"]:
+                    clip_data = {
+                        "text": u["clip_text"],
+                        "start": u["clip_start"],
+                        "end": u["clip_end"]
+                    }
+                    result = process_clip(clip_data, slow_method, initial_threshold)
                     if result.get("matched"):
                         matches.append(result["matches"])
                     else:
@@ -325,8 +377,8 @@ class WhisperComparison:
 # (C) メイン実行例
 # -------------------------------------------------
 if __name__ == "__main__":
-    source_audio = "../data/audio/source/pnHdRQbR2zs.mp3"
-    clipping_audio = "../data/audio/clipping/-bRcKCM5_3E.mp3"
+    source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
+    clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
 
     comparator = WhisperComparison(sampling_rate=16000)
 
