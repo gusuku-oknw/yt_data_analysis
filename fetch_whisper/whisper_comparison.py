@@ -13,7 +13,6 @@ from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-
 # ロギングの設定
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -28,7 +27,8 @@ class WhisperComparison:
         try:
             self.whisper_pipe = WhisperModel(
                 model_size_or_path="deepdml/faster-whisper-large-v3-turbo-ct2",
-                device=str(self.device)  # "cuda" or "cpu"
+                device=str(self.device),  # "cuda" or "cpu"
+                compute_type = "int8_float16",  # 例: メモリ軽減オプション
             )
             logging.info("faster-whisper model loaded successfully.")
         except Exception as e:
@@ -42,33 +42,39 @@ class WhisperComparison:
                 model='silero_vad',
                 force_reload=True
             )
-            (self.get_speech_timestamps, _, self.read_audio, _, _) = self.utils
+            (
+                self.get_speech_timestamps,  # 音声あり区間(話者区間)を取得する関数
+                self.save_audio,  # 音声ファイルとして保存する関数
+                self.read_audio,  # 音声ファイルからテンソルを読む関数
+                self.vad_collate,  # DataLoaderなどで使用されるコラテ関数
+                self.collect_chunks  # 長音声を切り分けるための関数
+            ) = self.utils
             logging.info("Silero VAD model loaded successfully.")
         except Exception as e:
             logging.error(f"Error loading Silero VAD: {e}")
             raise e
 
-        # Janomeのトークナイザ
+        # Janomeのトークナイザ（後段のテキスト比較で使用）
         self.janome_tokenizer = Tokenizer()
 
-    def detect_silence(self, audio_input, threshold: float = 0.4):
+    def get_speech_segments(self, audio_file, threshold: float = 0.5):
         """
-        Silero VAD を用いて無音区間を検出
+        Silero VAD を使って「音声あり区間」を取得し、秒単位のリストを返す関数。
+
+        戻り値の例:
+        [
+            {"start_sec": 0.0,  "end_sec": 3.2 },
+            {"start_sec": 4.5,  "end_sec": 7.1 },
+            ...
+        ]
         """
-        # audio_inputがファイルパスの場合
-        if isinstance(audio_input, str):
-            if not os.path.exists(audio_input):
-                raise FileNotFoundError(f"Audio file not found: {audio_input}")
-            audio_tensor = self.read_audio(audio_input, sampling_rate=self.sampling_rate)
-        else:
-            # すでにテンソルやnumpy配列の場合
-            audio_tensor = audio_input
+        if not os.path.exists(audio_file):
+            raise FileNotFoundError(f"Audio file not found: {audio_file}")
 
-        if len(audio_tensor) == 0:
-            logging.warning("Audio tensor is empty. No silence detected.")
-            return []
+        # 音声をテンソルとして読み込み (サンプリングレート指定)
+        audio_tensor = self.read_audio(audio_file, sampling_rate=self.sampling_rate)
 
-        # 無音区間を検出
+        # Silero VADで「音声がある区間(サンプル単位)」を検出
         speech_timestamps = self.get_speech_timestamps(
             audio_tensor,
             self.model_vad,
@@ -76,96 +82,76 @@ class WhisperComparison:
             sampling_rate=self.sampling_rate
         )
 
-        silences = []
-        last_end = 0
-        for segment in speech_timestamps:
-            if last_end < segment['start']:
-                silences.append({
-                    "from": last_end / self.sampling_rate,
-                    "to": segment['start'] / self.sampling_rate
-                })
-            last_end = segment['end']
-
-        # 音声末尾以降の無音区間があれば追加
-        if last_end < len(audio_tensor):
-            silences.append({
-                "from": last_end / self.sampling_rate,
-                "to": len(audio_tensor) / self.sampling_rate
+        # サンプル単位 -> 秒単位 に変換
+        speech_segments = []
+        for seg in speech_timestamps:
+            start_sec = seg["start"] / self.sampling_rate
+            end_sec = seg["end"] / self.sampling_rate
+            speech_segments.append({
+                "start_sec": start_sec,
+                "end_sec": end_sec
             })
 
-        return silences
+        return speech_segments
 
-    def transcribe_blocks(self, audio_file, blocks, language: str = "ja", beam_size: int = 5):
+    def transcribe_with_vad(self, audio_file, threshold=0.5, language="ja", beam_size=5):
         """
-        faster-whisperを使用して音声ブロックを文字起こしします。
-        blocks は [{"from": start_sec, "to": end_sec}, ...] のリスト。
+        1) Silero VADで音声を区間に分割
+        2) 各区間ごとにfaster-whisperで文字起こし
+        3) faster-whisperが返すセグメントの相対時刻に「区間の開始秒」を加算し、絶対時刻に変換
+        4) すべてまとめて返す
         """
-        transcriptions = []
-        try:
-            # librosaで読み込み
-            audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
+        # まずはVADで音声あり区間を取得
+        speech_segments = self.get_speech_segments(audio_file, threshold=threshold)
+        if not speech_segments:
+            logging.warning("音声があるセグメントが検出されませんでした。")
+            return []
 
-            for block in tqdm(blocks, desc="Transcribing Blocks"):
-                start_sample = int(block["from"] * sr)
-                end_sample = int(block["to"] * sr)
+        # librosa で「float32 numpy配列」として全体音声を読み込み
+        audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
+        audio = audio.astype(np.float32)
 
-                # ブロックごとの音声切り出し
-                block_audio = audio[start_sample:end_sample]
+        all_transcribed_segments = []
 
-                # float32に変換 (faster-whisperが推奨)
-                block_audio = block_audio.astype(np.float32)
+        # 各区間ごとに小分けした音声を作り、whisperで推論
+        for seg in tqdm(speech_segments, desc="Transcribing each VAD segment"):
+            seg_start_sec = seg["start_sec"]
+            seg_end_sec = seg["end_sec"]
 
-                # transcribe
-                segments, info = self.whisper_pipe.transcribe(
-                    block_audio,
-                    language=language,
-                    beam_size=beam_size
-                )
+            # numpy配列におけるインデックス
+            start_idx = int(seg_start_sec * sr)
+            end_idx = int(seg_end_sec * sr)
+            segment_audio = audio[start_idx:end_idx]
 
-                # セグメントをまとめてテキスト化
-                block_text = "".join([seg.text for seg in segments])
-
-                transcriptions.append({
-                    "text": block_text,
-                    "start": block["from"],
-                    "end": block["to"]
-                })
-
-        except Exception as e:
-            logging.error(f"transcribe_blocks中でエラーが発生しました: {e}", exc_info=True)
-
-        return transcriptions
-
-    def transcribe_audio(self, audio_file, language="ja", beam_size=5):
-        """
-        音声ファイル全体を文字起こししてテキストとして返します。
-        """
-        try:
-            audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
-            # float32に変換 (faster-whisperが推奨)
-            audio = audio.astype(np.float32)
-
+            # faster-whisper でこの小区間を文字起こし (seg.start, seg.end はブロック内での相対秒)
             segments, info = self.whisper_pipe.transcribe(
-                audio,
+                segment_audio,
                 language=language,
                 beam_size=beam_size
             )
 
-            # セグメントをまとめてテキスト化
-            text = "".join([seg.text for seg in segments])
-            return text.strip()
-        except Exception as e:
-            logging.error(f"Error transcribing audio: {e}", exc_info=True)
-            return ""
+            # 各segmentについて、相対時刻に seg_start_sec を足して絶対時刻に変換
+            for whisper_seg in segments:
+                absolute_start = seg_start_sec + whisper_seg.start
+                absolute_end = seg_start_sec + whisper_seg.end
+                text = whisper_seg.text
 
-    # =========================
-    # 以下、テキスト比較関連のメソッド
-    # =========================
+                all_transcribed_segments.append({
+                    "text": text,
+                    "start": absolute_start,
+                    "end": absolute_end
+                })
+
+        return all_transcribed_segments
+
+    # ==========================================
+    # 以下、テキスト比較に関わる関数 (お好みで)
+    # ==========================================
 
     def preprocess_text(self, text):
         """テキストの前処理（スペース削除、記号削除など）"""
-        text = re.sub(r'\s+', '', text)       # 連続する空白の削除
-        text = re.sub(r'[^\w\s]', '', text)   # 記号削除
+        text = re.sub(r'\s+', '', text)  # 連続する空白の削除
+        text = re.sub(r'[^\w\s]', '', text)  # 記号削除
         return text
 
     def tokenize_japanese(self, text):
@@ -335,71 +321,54 @@ class WhisperComparison:
 
         return matches, unmatched
 
-    def process_audio(self, source_audio_file, clipping_audio_file,
-                      fast_method="sequence", slow_method="tfidf", threshold=0.8):
-        """
-        2つの音声ファイルを文字起こしし、それぞれを単一セグメント化したもの同士で比較。
-        （必要に応じて、無音区間検出や複数ブロックへの分割を適用してください）
-        """
-        # 1. ソース音声を文字起こし
-        source_text = self.transcribe_audio(source_audio_file)
-        # 2. 切り抜き音声を文字起こし
-        clipping_text = self.transcribe_audio(clipping_audio_file)
-
-        # ここではシンプルに「音声全体を1つのセグメント」にしています。
-        source_segments = [{
-            "text": source_text,
-            "start": 0,
-            "end": 0
-        }]
-        clipping_segments = [{
-            "text": clipping_text,
-            "start": 0,
-            "end": 0
-        }]
-
-        # 3. 上記2つのセグメントを比較
-        matches, unmatched = self.compare_segments(
-            clipping_segments,
-            source_segments,
-            initial_threshold=threshold,
-            fast_method=fast_method,
-            slow_method=slow_method
-        )
-
-        # 必要ならここで出力を整形する
-        return matches, unmatched
-
-
+# -------------------------------------------------
+# (C) メイン実行例
+# -------------------------------------------------
 if __name__ == "__main__":
     source_audio = "../data/audio/source/pnHdRQbR2zs.mp3"
     clipping_audio = "../data/audio/clipping/-bRcKCM5_3E.mp3"
 
-    try:
-        # torchaudioを使ってサンプリングレートを取得
-        sampling_rate = torchaudio.info(clipping_audio).sample_rate
-    except Exception as e:
-        logging.error(f"Error reading audio info: {e}")
-        sampling_rate = 16000  # デフォルトのサンプリングレートを設定
+    comparator = WhisperComparison(sampling_rate=16000)
 
-    comparator = WhisperComparison(sampling_rate=sampling_rate)
+    # 1. ソース音声をセグメント化＆文字起こし
+    source_segments = comparator.transcribe_with_vad(
+        audio_file=source_audio,
+        threshold=0.5,  # VADの閾値
+        language="ja",
+        beam_size=5
+    )
+    print("\n=== Source Segments ===")
+    for i, seg in enumerate(source_segments):
+        print(f"({i+1}) [{seg['start']:.2f}s - {seg['end']:.2f}s] {seg['text']}")
 
-    # process_audio は (matches, unmatched) のタプルを返す
-    matches, unmatched = comparator.process_audio(source_audio, clipping_audio)
+    # 2. 切り抜き音声をセグメント化＆文字起こし
+    clipping_segments = comparator.transcribe_with_vad(
+        audio_file=clipping_audio,
+        threshold=0.5,
+        language="ja",
+        beam_size=5
+    )
+    print("\n=== Clipping Segments ===")
+    for i, seg in enumerate(clipping_segments):
+        print(f"({i+1}) [{seg['start']:.2f}s - {seg['end']:.2f}s] {seg['text']}")
 
+    # 3. 両者のテキストセグメントを比較 (切り抜き → ソース)
+    #    fast_method="sequence" と slow_method="tfidf" を使い、閾値0.8でマッチングを試みる
+    matches, unmatched = comparator.compare_segments(
+        clipping_segments,
+        source_segments,
+        initial_threshold=0.8,
+        fast_method="sequence",
+        slow_method="tfidf"
+    )
+
+    # 4. 結果表示
     print("\n=== マッチ結果 ===")
     if matches:
         for match_list in matches:
             for sub in match_list:
-                print(f"[Clip] start={sub['clip_start']} end={sub['clip_end']}, text={sub['clip_text']}")
-                print(f" -> [Source] start={sub['source_start']} end={sub['source_end']}, text={sub['source_text']}")
+                print(f"[Clip] start={sub['clip_start']:.2f}s end={sub['clip_end']:.2f}s, text=\"{sub['clip_text']}\"")
+                print(f" -> [Source] start={sub['source_start']:.2f}s end={sub['source_end']:.2f}s, text=\"{sub['source_text']}\"")
                 print(f" -> similarity={sub['similarity']:.3f}\n")
     else:
         print("マッチなし")
-
-    print("\n=== マッチしなかったセグメント ===")
-    if unmatched:
-        for um in unmatched:
-            print(f"[Unmatched Clip] start={um['clip_start']} end={um['clip_end']}, text={um['clip_text']}")
-    else:
-        print("なし")
