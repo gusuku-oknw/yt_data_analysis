@@ -7,6 +7,7 @@ import os
 from urllib.parse import urlparse, parse_qs
 from FunctionUtils import FunctionUtils
 import re
+from tqdm import tqdm
 
 # URLアンサンブル
 def split_urls(row):
@@ -116,7 +117,18 @@ def get_video_id_from_url(url):
 
 def remove_query_params(url):
     """
-    クエリパラメータを削除する。ただし、YouTube動画ID (v=) は保持。
+    URLから不要なクエリパラメータを削除する。ただし、YouTubeの動画IDを示す "v=" パラメータは保持する。
+
+    Parameters:
+        url (str): 処理対象のURL。
+
+    Returns:
+        str: 修正されたURL。
+
+    詳細:
+        - URLを解析してクエリパラメータを抽出します。
+        - "v=" パラメータが存在する場合はそれを保持してURLを再構築します。
+        - "v=" パラメータが存在しない場合は、クエリ部分を完全に削除します。
     """
     parsed_url = urlparse(url)
     query_params = parse_qs(parsed_url.query)

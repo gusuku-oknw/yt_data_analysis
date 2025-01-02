@@ -312,8 +312,6 @@ def add_original_video_urls(df):
 
     return None
 
-
-
 def get_popular_main(channel_id):
     """
     チャンネルの人気動画データを取得し、CSV に保存する。
