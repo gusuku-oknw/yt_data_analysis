@@ -29,7 +29,6 @@ def create_directory(base_directory):
     os.makedirs(base_directory, exist_ok=True)
     return base_directory
 
-
 # URLフィルタリング
 def filter_and_correct_urls(url_list):
     """
