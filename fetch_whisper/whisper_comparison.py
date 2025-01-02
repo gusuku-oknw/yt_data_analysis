@@ -40,7 +40,7 @@ class WhisperComparison:
             self.model_vad, self.utils = torch.hub.load(
                 repo_or_dir='snakers4/silero-vad',
                 model='silero_vad',
-                force_reload=True
+                # force_reload=True
             )
             (
                 self.get_speech_timestamps,  # 音声あり区間(話者区間)を取得する関数
@@ -94,12 +94,22 @@ class WhisperComparison:
 
         return speech_segments
 
-    def transcribe_with_vad(self, audio_file, threshold=0.5, language="ja", beam_size=5):
+    def transcribe_with_vad(self, audio_file, threshold=0.5, language="ja", beam_size=5, padding=0.2):
         """
         1) Silero VADで音声を区間に分割
         2) 各区間ごとにfaster-whisperで文字起こし
         3) faster-whisperが返すセグメントの相対時刻に「区間の開始秒」を加算し、絶対時刻に変換
         4) すべてまとめて返す
+
+        Parameters:
+            audio_file (str): 入力音声ファイル
+            threshold (float): VADの閾値
+            language (str): 文字起こし言語
+            beam_size (int): Whisperのビームサイズ
+            padding (float): 各セグメントに追加する前後の無音区間（秒）
+
+        Returns:
+            list: 文字起こし結果を含むセグメントリスト
         """
         # まずはVADで音声あり区間を取得
         speech_segments = self.get_speech_segments(audio_file, threshold=threshold)
@@ -110,13 +120,14 @@ class WhisperComparison:
         # librosa で「float32 numpy配列」として全体音声を読み込み
         audio, sr = librosa.load(audio_file, sr=self.sampling_rate)
         audio = audio.astype(np.float32)
+        total_duration = len(audio) / sr
 
         all_transcribed_segments = []
 
         # 各区間ごとに小分けした音声を作り、whisperで推論
         for seg in tqdm(speech_segments, desc="Transcribing each VAD segment"):
-            seg_start_sec = seg["start_sec"]
-            seg_end_sec = seg["end_sec"]
+            seg_start_sec = max(0, seg["start_sec"] - padding)  # 前にpaddingを追加
+            seg_end_sec = min(total_duration, seg["end_sec"] + padding)  # 後ろにpaddingを追加
 
             # numpy配列におけるインデックス
             start_idx = int(seg_start_sec * sr)
@@ -377,15 +388,15 @@ class WhisperComparison:
 # (C) メイン実行例
 # -------------------------------------------------
 if __name__ == "__main__":
-    source_audio = "../data/audio/source/bh4ObBry9q4.mp3"
-    clipping_audio = "../data/audio/clipping/84iD1TEttV0.mp3"
+    source_audio = "../data/audio/source/-1FjQf5ipUA.mp3"
+    clipping_audio = "../data/audio/clipping/htdemucs/FIoqPoclE6M/vocals.wav"
 
     comparator = WhisperComparison(sampling_rate=16000)
 
     # 1. ソース音声をセグメント化＆文字起こし
     source_segments = comparator.transcribe_with_vad(
         audio_file=source_audio,
-        threshold=0.5,  # VADの閾値
+        threshold=0.35,  # VADの閾値
         language="ja",
         beam_size=5
     )
@@ -396,7 +407,7 @@ if __name__ == "__main__":
     # 2. 切り抜き音声をセグメント化＆文字起こし
     clipping_segments = comparator.transcribe_with_vad(
         audio_file=clipping_audio,
-        threshold=0.5,
+        threshold=0.35,
         language="ja",
         beam_size=5
     )
