@@ -4,6 +4,7 @@ import pandas as pd
 from googleapiclient.discovery import build
 from openai import OpenAI
 import re
+from datetime import datetime
 
 class search_yt:
     def __init__(self):
@@ -248,7 +249,6 @@ class search_yt:
 
         return videos[:max_results]
 
-
     def add_original_video_urls(self, df):
         """
         'Video Description' カラムを処理して新しいカラム 'Original videoURL' を追加する。
@@ -279,3 +279,28 @@ class search_yt:
             print("予期しないエラーが発生しました:", str(e))
 
         return None
+
+if __name__ == "__main__":
+    # インスタンス生成
+    sy = search_yt()
+
+    # 検索キーワード
+    search_keyword = "にじさんじ　切り抜き"
+
+    # 「切り抜き」というキーワードで検索
+    result_df = sy.search(search_keyword)
+
+    # OpenAI を使って元動画 URL を抽出し、新しいカラムとして追加
+    updated_df = sy.add_original_video_urls(result_df)
+
+    # 保存ディレクトリとファイル名を生成
+    save_dir = "../data/"
+    os.makedirs(save_dir, exist_ok=True)  # ディレクトリが存在しない場合は作成
+
+    # 実行日時をフォーマット
+    current_date = datetime.now().strftime("%Y%m%d_%H%M%S")
+    csv_filename = f"{save_dir}{search_keyword}_{current_date}.csv"
+
+    # CSV ファイルとして保存
+    updated_df.to_csv(csv_filename, index=False, encoding="utf-8-sig")
+    print(f"検索結果を '{csv_filename}' という名前で保存しました。")
