@@ -66,7 +66,7 @@ if __name__ == "__main__":
             )
 
             # 3. 両者のテキストセグメントを比較
-            matches, unmatched = comparator.compare_segments(
+            matches, unmatched_source = comparator.compare_segments(
                 clipping_segments,
                 source_segments,
                 initial_threshold=0.8,

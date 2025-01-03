@@ -283,7 +283,9 @@ def list_original_urls(csv_file, base_directory="../data/chat_messages", url_col
     return pd.DataFrame(download_records)
 
 if __name__ == "__main__":
-    csv_file = "../data/にじさんじ　切り抜き_20250102_202807.csv"
-    result_df = list_original_urls(csv_file, delete_multiple=True, url_column="Original videoURL")
-    output_csv = "../data/download_results.csv"
-    save_to_csv(result_df, output_csv)
+    chat_download("https://www.youtube.com/watch?v=a4KN-5n0YF0")
+
+    # csv_file = "../data/にじさんじ　切り抜き_20250102_202807.csv"
+    # result_df = list_original_urls(csv_file, delete_multiple=True, url_column="Original videoURL")
+    # output_csv = "../data/download_results.csv"
+    # save_to_csv(result_df, output_csv)
