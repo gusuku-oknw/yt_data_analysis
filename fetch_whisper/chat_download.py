@@ -5,9 +5,65 @@ import pandas as pd
 import tqdm
 import os
 from urllib.parse import urlparse, parse_qs
-from FunctionUtils import FunctionUtils
 import re
 import progressbar
+from openai import OpenAI
+from dotenv import load_dotenv
+
+class ImageText:
+    def __init__(self):
+        load_dotenv()
+        self.client = OpenAI(
+            api_key=os.environ['OpenAIKey'],
+        )
+
+    def image2text(self, image_url):
+        """
+        切り抜き動画の概要欄テキストから元動画URLを抽出する。
+
+        Parameters:
+            text (str): 切り抜き動画の概要欄テキスト。
+
+        Returns:
+            str: 抽出されたURLのリスト（改行区切り）または "None"（URLが見つからない場合）。
+        """
+        if not image_url.strip():
+            return "None"  # 空白のみの場合
+
+        if image_url == ",":
+            return "None"  # 特定の無効値の場合
+
+        # GPT-4 APIへのプロンプト構築
+        message = [
+            {
+                "role": "user", "content":
+                (
+                    "画像に書かれている文字は何ですか？書いている文字だけ教えてください"
+                )
+            },
+            {
+                "type": "image_url",
+                "image_url":
+                    {
+                        "url": image_url
+                    }
+            }
+        ]
+
+        try:
+            # OpenAI API呼び出し
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=message,
+                temperature=0.2,
+            )
+            extracted = response.choices[0].message.content.strip()
+        except Exception as e:
+            print("エラーが発生しました:", str(e))
+            extracted = "エラーが発生しました。"
+
+        print(extracted)  # デバッグ用出力
+        return extracted
 
 # URLアンサンブル
 def split_urls(row):
@@ -328,6 +384,7 @@ def list_original_urls(csv_file, base_directory="../data/chat_messages", url_col
                 continue
 
             df = chat_download(original_url)
+
             if df is not None:
                 save_to_csv(df, file_path)
                 download_records.append({
