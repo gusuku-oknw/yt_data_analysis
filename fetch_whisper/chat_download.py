@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from chat_downloader import ChatDownloader
 from openai import OpenAI
 
@@ -150,7 +150,11 @@ class ImageText:
 # 3) チャットデータのダウンロードとスタンプ解析を行うクラス
 # =============================================================================
 class ChatDataProcessor:
-    def __init__(self):
+    def __init__(self, db_handler):
+        """
+        db_handler: DBHandler のインスタンス
+        """
+        self.db_handler = db_handler
         self.image_text_extractor = ImageText()
 
     def download_chat_data(self, url):
@@ -251,14 +255,15 @@ class ChatDataProcessor:
             for stamp in stamps:
                 stamp_description = stamp_mapping.get(stamp, f"Unknown Stamp: {stamp}")
 
+                # 1) 同じ行内 or stamp_mapping で既に判明していれば抑制（従来処理）
                 if stamp in stamps_in_this_row:
                     reuse_text, reuse_emotion = stamps_in_this_row[stamp]
                     stamp_texts.append(f"{stamp_description}: {reuse_text}")
                     stamp_emotions.append(reuse_emotion)
                     continue
 
-                # 既に確定した情報があれば再利用
-                if stamp in stamp_mapping and not stamp_mapping[stamp].startswith("Unknown Stamp:"):
+                if (stamp in stamp_mapping and
+                        not stamp_mapping[stamp].startswith("Unknown Stamp:")):
                     known_text_emotion = stamp_mapping[stamp]
                     if ": " in known_text_emotion:
                         known_text, known_emotion = known_text_emotion.split(": ", 1)
@@ -269,6 +274,7 @@ class ChatDataProcessor:
                     stamp_texts.append(f"{stamp_description}: {known_text}")
                     stamp_emotions.append(known_emotion)
 
+                    # Stamp_data に追加
                     stamps_data_list.append({
                         "channel_id": channel_id,
                         "stamp_code": stamp,
@@ -278,15 +284,31 @@ class ChatDataProcessor:
                     })
                     continue
 
-                # 未確定 => 画像があればAPI
+                # 2) すでに (channel_id, stamp_code) が 5件以上あるならスキップ
+                stamp_count_in_db = self.db_handler.count_stamp_occurrences(channel_id, stamp)
+                if stamp_count_in_db >= 5:
+                    # API 呼び出しをせず、固定値で処理
+                    stamp_text = "Skipped (Limit Reached)"
+                    stamp_emotion = "Unknown"
+                    stamp_texts.append(f"{stamp_description}: {stamp_text}")
+                    stamp_emotions.append(stamp_emotion)
+                    stamps_in_this_row[stamp] = (stamp_text, stamp_emotion)
+
+                    # DB にも追加しない → 「既に 5 つあるなら、これ以上詳細を増やさない」方針なら
+                    # 何もしない or あえてレコード挿入したくない場合は追加しない
+                    # ただし「何が起きたか履歴で見たい場合」には挿入してもよい
+                    # stamps_data_list.append(...)
+                    continue
+
+                # 3) ここまで来たら新規に API  呼び出し
                 if row['Stamp Image URL'] != "No stamp image":
                     extracted_text = self.image_text_extractor.image2text(row['Stamp Image URL'])
-                    # "None: Unknown" のように返ってくる場合もあるのでsplitチェック
                     if ": " in extracted_text:
                         stamp_text, stamp_emotion = extracted_text.split(": ", 1)
                     else:
                         stamp_text, stamp_emotion = extracted_text, "Unknown"
 
+                    # stamp_mapping を更新
                     if stamp_description.startswith("Unknown Stamp:"):
                         stamp_mapping[stamp] = f"{stamp_text}: {stamp_emotion}"
 
@@ -344,6 +366,43 @@ class DBHandler:
     def __init__(self, db_url="sqlite:///chat_data.db"):
         self.db_url = db_url
         self.engine = create_engine(db_url)
+
+        self.create_stamp_data_table(self.engine)
+
+    def create_stamp_data_table(self, engine):
+        create_table_query = text("""
+        CREATE TABLE IF NOT EXISTS Stamp_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT NOT NULL,
+            stamp_code TEXT NOT NULL,
+            stamp_text TEXT,
+            stamp_emotion TEXT,
+            created_at TEXT
+        )
+        """)
+        with engine.connect() as conn:
+            conn.execute(create_table_query)
+        print("Stamp_data テーブルを作成しました（または既に存在します）。")
+
+    def count_stamp_occurrences(self, channel_id, stamp_code):
+        """
+        Stamp_data テーブルで (channel_id, stamp_code) のレコードが何件あるかを返す
+        """
+        from sqlalchemy import text
+
+        query = text("""
+            SELECT COUNT(*) 
+            FROM Stamp_data 
+            WHERE channel_id = :ch_id AND stamp_code = :st_code
+        """)
+
+        with self.engine.connect() as conn:
+            result = conn.execute(query, {"ch_id": channel_id, "st_code": stamp_code}).fetchone()
+
+        if result is not None:
+            count = result[0]  # 最初の要素がカウント値
+            return count
+        return 0
 
     def table_exists(self, table_name):
         inspector = inspect(self.engine)
@@ -430,7 +489,7 @@ class DBHandler:
                 'clipping_urls': json.dumps(clipping_list, ensure_ascii=False),
             }
             # 既存レコード削除して入れ直す
-            delete_query = f"DELETE FROM Channel_id WHERE channel_id = '{channel_id}'"
+            delete_query = text(f"DELETE FROM Channel_id WHERE channel_id = '{channel_id}'")
             with self.engine.connect() as conn:
                 conn.execute(delete_query)
 
@@ -453,7 +512,7 @@ class DBHandler:
 class ChatScraper:
     def __init__(self, db_url="sqlite:///chat_data.db"):
         self.db_handler = DBHandler(db_url=db_url)
-        self.chat_processor = ChatDataProcessor()
+        self.chat_processor = ChatDataProcessor(db_handler=self.db_handler)
 
         from search_yt import search_yt
         self.search_data = search_yt()
@@ -656,7 +715,7 @@ class ChatScraper:
 # 6) スクリプト実行例
 # =============================================================================
 if __name__ == "__main__":
-    csv_file = "../data/test_videos_processed.csv"
+    csv_file = "../data/にじさんじ　切り抜き_20250102_202807.csv"
     scraper = ChatScraper(db_url="sqlite:///chat_data.db")
     result_df = scraper.list_original_urls(
         csv_file,
