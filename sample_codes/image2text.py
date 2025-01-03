@@ -27,10 +27,10 @@ class ImageText:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "この画像にかかれている文字を抽出してください。なかった場合なんと言っていそうですか？\n"
+                    {"type": "text", "text": "この画像にかかれている文字と感情を抽出してください。なかった場合なんと言っていそうですか？\n"
                                              "[Joy, Sadness, Anticipation, Surprise, Anger, Fear, Disgust, Trust]の中で選んでください。テキストのみで出力してください。\n"
-                                             "例: 文字あり: Hello, World!\n"
-                                             "文字なし: Anger"},
+                                             "例: Hello, World!: Joy\n"
+                                             "None: Anger"},
                     {
                         "type": "image_url",
                         "image_url": {
@@ -56,7 +56,7 @@ class ImageText:
 
 if __name__ == "__main__":
     # テスト用の画像URL
-    image_url = "https://yt3.ggpht.com/Co2M3WdCbJm7t2q5XZOgBb8a5DQ1PUQpFsF8QkVfWOd-5SRVpb5YyazcczbzQh8yUKOqzocS"
+    image_url = "https://yt3.ggpht.com/f8WJ7Hw-3pO2kueey5WeySLC4fYDlTc3iXDv1Et18qC1ZXQ6QExbKBQPyflj_TMCNlSli9r1"
 
     # インスタンスを作成
     image_text = ImageText()

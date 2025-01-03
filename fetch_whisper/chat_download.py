@@ -13,45 +13,41 @@ from dotenv import load_dotenv
 class ImageText:
     def __init__(self):
         load_dotenv()
-        self.client = OpenAI(
-            api_key=os.environ['OpenAIKey'],
-        )
+        self.client = OpenAI(api_key=os.environ['OpenAIKey'])
 
     def image2text(self, image_url):
         """
-        切り抜き動画の概要欄テキストから元動画URLを抽出する。
+        画像URLから画像内の文字を抽出する。
 
         Parameters:
-            text (str): 切り抜き動画の概要欄テキスト。
+            image_url (str): 画像のURL。
 
         Returns:
-            str: 抽出されたURLのリスト（改行区切り）または "None"（URLが見つからない場合）。
+            str: 抽出された文字列、またはエラーメッセージ。
         """
         if not image_url.strip():
             return "None"  # 空白のみの場合
 
-        if image_url == ",":
-            return "None"  # 特定の無効値の場合
-
-        # GPT-4 APIへのプロンプト構築
+        # OpenAI APIへのプロンプト構築
         message = [
             {
-                "role": "user", "content":
-                (
-                    "画像に書かれている文字は何ですか？書いている文字だけ教えてください"
-                )
-            },
-            {
-                "type": "image_url",
-                "image_url":
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "この画像にかかれている文字と感情を抽出してください。なかった場合なんと言っていそうですか？\n"
+                                             "[Joy, Sadness, Anticipation, Surprise, Anger, Fear, Disgust, Trust]の中で選んでください。テキストのみで出力してください。\n"
+                                             "例: Hello, World!: Joy\n"
+                                             "None: Anger"},
                     {
-                        "url": image_url
-                    }
+                        "type": "image_url",
+                        "image_url": {
+                            "url": image_url,
+                        },
+                    },
+                ],
             }
         ]
 
         try:
-            # OpenAI API呼び出し
             response = self.client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=message,
@@ -62,7 +58,6 @@ class ImageText:
             print("エラーが発生しました:", str(e))
             extracted = "エラーが発生しました。"
 
-        print(extracted)  # デバッグ用出力
         return extracted
 
 # URLアンサンブル
@@ -301,6 +296,66 @@ def save_to_csv(dataframe, file_path):
     """
     dataframe.to_csv(file_path, index=False, encoding="utf-8-sig")
     print(f"データを {file_path} に保存しました。")
+
+def message_stamp2text(df, stamp_mapping, image_text_extractor):
+    """
+    DataFrame内のメッセージとスタンプ画像を処理し、新しいカラムを追加する。
+
+    Parameters:
+        df (pd.DataFrame): 元のチャットデータを含むDataFrame。
+        stamp_mapping (dict): スタンプ種類と説明のマッピング辞書。
+        image_text_extractor (ImageText): スタンプ画像から文字と感情を抽出するクラスのインスタンス。
+
+    Returns:
+        pd.DataFrame: 新しいカラムを追加したDataFrame。
+    """
+
+    def process_row(row):
+        # 元のメッセージを保存
+        original_message = row['Message']
+        message = original_message.replace('□', '').strip()  # '□'を削除
+        stamps = []
+        remaining_message = message
+
+        # スタンプを抽出して削除
+        while ':_' in remaining_message:
+            start_idx = remaining_message.find(':_')
+            end_idx = remaining_message.find(':', start_idx + 1)
+            if end_idx != -1:
+                stamp_code = remaining_message[start_idx + 2:end_idx]
+                stamps.append(stamp_code)
+                remaining_message = remaining_message[:start_idx] + remaining_message[end_idx + 1:]
+            else:
+                break
+
+        # スタンプの種類と感情を保存
+        stamp_texts = []
+        stamp_emotions = []
+        for stamp in stamps:
+            # スタンプの説明を取得
+            stamp_description = stamp_mapping.get(stamp, f"Unknown Stamp: {stamp}")
+            # 画像から文字と感情を抽出
+            if row['Stamp Image URL'] != "No stamp image":
+                extracted_text = image_text_extractor.image2text(row['Stamp Image URL'])
+                stamp_text, stamp_emotion = extracted_text.split(": ", 1) if ": " in extracted_text else (
+                extracted_text, "Unknown")
+                stamp_texts.append(f"{stamp_description}: {stamp_text}")
+                stamp_emotions.append(stamp_emotion)
+            else:
+                stamp_texts.append(f"{stamp_description}: No image available")
+                stamp_emotions.append("Unknown")
+
+        # 最終メッセージ処理
+        processed_message = remaining_message.strip()
+
+        return original_message, processed_message, stamps, "; ".join(stamp_texts), "; ".join(stamp_emotions)
+
+    # 新しいカラムを追加
+    df[['Original Message', 'Message', 'Stamp Codes', 'Stamp Texts', 'Stamp Emotions']] = df.apply(
+        lambda row: pd.Series(process_row(row)), axis=1
+    )
+
+    return df
 
 def list_original_urls(csv_file, base_directory="../data/chat_messages", url_column="Original URL", video_url_column="Video URL", delete_multiple=False):
     """
