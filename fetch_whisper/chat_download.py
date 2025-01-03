@@ -169,6 +169,7 @@ def chat_download(url):
                 "Amount": message.get('money', {}).get('amount')
             })
             bar.update(i + 1)  # プログレスバーを更新
+
     except Exception as e:
         print(f"Error during chat download: {e}")
         return None
