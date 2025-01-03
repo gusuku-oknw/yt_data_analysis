@@ -7,17 +7,16 @@ import os
 from urllib.parse import urlparse, parse_qs
 from FunctionUtils import FunctionUtils
 import re
-from tqdm import tqdm
+import progressbar
 
 # URLアンサンブル
 def split_urls(row):
     """
-    行に含まれる複数のURLを分割してリストとして返す。
+    行に含まれる複数のURLを分割してリストとして返す。チャンネルURLは除外。
     """
-    url_pattern = re.compile(
-        r'https?://[^\s,]+'
-    )
-    return url_pattern.findall(row)
+    url_pattern = re.compile(r'https?://[^\s,]+')
+    urls = url_pattern.findall(row)
+    return filter_and_correct_urls(urls, allow_channels=False)
 
 def create_directory(base_directory):
     """
@@ -33,7 +32,7 @@ def create_directory(base_directory):
     return base_directory
 
 # URLフィルタリング
-def filter_and_correct_urls(url_list, allow_playlists=False, allow_channels=False):
+def filter_and_correct_urls(url_list, allow_playlists=False, allow_channels=False, exclude_twitch=True):
     """
     URLリストをフィルタリングし、不完全なURLを補正して有効なYouTubeおよびTwitch URLのみを返す。
 
@@ -41,6 +40,7 @@ def filter_and_correct_urls(url_list, allow_playlists=False, allow_channels=Fals
         url_list (list): URLのリスト。
         allow_playlists (bool): プレイリストURLを許可するかどうか。
         allow_channels (bool): チャンネルURLを許可するかどうか。
+        exclude_twitch (bool): TwitchのURLを除外するかどうか。
 
     Returns:
         list: フィルタリングされた有効なURLのリスト。
@@ -74,8 +74,12 @@ def filter_and_correct_urls(url_list, allow_playlists=False, allow_channels=Fals
         if not allow_channels and ("/channel/" in url or channel_pattern.search(url)):
             continue
 
+        # Twitch URLを除外する場合
+        if exclude_twitch and twitch_url_pattern.match(url):
+            continue
+
         # YouTubeまたはTwitchのURLとして有効かチェック
-        if youtube_url_pattern.match(url) or twitch_url_pattern.match(url):
+        if youtube_url_pattern.match(url) or (not exclude_twitch and twitch_url_pattern.match(url)):
             valid_urls.append(url)
 
     return valid_urls
@@ -143,37 +147,44 @@ def remove_query_params(url):
 
 
 def chat_download(url):
-    # 抽出データのリスト
+    """
+    指定されたURLのチャットデータをダウンロードし、DataFrameを返す。
+
+    Parameters:
+        url (str): チャットデータを取得するURL。
+
+    Returns:
+        pd.DataFrame: チャットデータ。
+    """
     messages_data = []
 
     try:
-        chat = ChatDownloader().get_chat(url,
-                                         # start_time='0:00',
-                                         # end_time='0:10:00',
-                                         message_groups=['messages', 'superchat']
-                                         )
-    # create a generator
+        chat = ChatDownloader().get_chat(url, message_groups=['messages', 'superchat'])
+        bar = progressbar.ProgressBar(max_value=progressbar.UnknownLength)  # プログレスバーを設定
+
+        for i, message in enumerate(chat):
+            messages_data.append({
+                "Time_in_seconds": message.get('time_in_seconds'),
+                "Message": message.get('message'),
+                "Amount": message.get('money', {}).get('amount')
+            })
+            bar.update(i + 1)  # プログレスバーを更新
     except Exception as e:
-        print(f"Error during transcription: {e}")
+        print(f"Error during chat download: {e}")
         return None
 
-    # --------------------------------------------------------------------
-    # chat = "<chat_downloader.sites.common.Chat object at 0x0000027CC147BDF0>"
-    for message in tqdm.tqdm(chat):  # iterate over messages
-
-        # print(f'message: {message}')
-        # 各メッセージからデータを抽出
-        message_text = message.get('message')
-        amount = message.get('money', {}).get('amount')
-        time_in_seconds = message.get('time_in_seconds')
-
-        # 必要なデータを辞書形式でリストに追加
-        messages_data.append({
-            "Time_in_seconds": time_in_seconds,
-            "Message": message_text,
-            "Amount": amount,
-        })
     return pd.DataFrame(messages_data)
+
+def save_to_csv(dataframe, file_path):
+    """
+    指定されたDataFrameをCSVファイルとして保存する。
+
+    Parameters:
+        dataframe (pd.DataFrame): 保存するデータ。
+        file_path (str): ファイルの保存先パス。
+    """
+    dataframe.to_csv(file_path, index=False, encoding="utf-8-sig")
+    print(f"データを {file_path} に保存しました。")
 
 def list_original_urls(csv_file, base_directory="../data/chat_messages", url_column="Original URL", video_url_column="Video URL", delete_multiple=False):
     """
@@ -191,6 +202,10 @@ def list_original_urls(csv_file, base_directory="../data/chat_messages", url_col
     """
     try:
         df = pd.read_csv(csv_file, encoding="utf-8-sig")
+
+        # カラム名の動的選択
+        if url_column not in df.columns and "Original videoURL" in df.columns:
+            url_column = "Original videoURL"
 
         if url_column not in df.columns or video_url_column not in df.columns:
             print(f"指定されたカラム '{url_column}' または '{video_url_column}' がCSVファイルに存在しません。")
@@ -231,12 +246,14 @@ def list_original_urls(csv_file, base_directory="../data/chat_messages", url_col
             })
 
     download_records = []
-    for item in tqdm(filtered_all_urls, desc="チャットダウンロード処理"):
+    bar = progressbar.ProgressBar(max_value=len(filtered_all_urls))  # プログレスバーを設定
+
+    for i, item in enumerate(filtered_all_urls):
         video_url = item["Video URL"]
         original_url = item["Original URL"]
 
         try:
-            video_id = re.search(r'(?<=v=)[^&]+', original_url).group() or "unknown_video_id"
+            video_id = get_video_id_from_url(remove_query_params(original_url))
             file_name = f"{video_id}.csv"
             file_path = os.path.join(target_directory, file_name)
 
@@ -247,11 +264,12 @@ def list_original_urls(csv_file, base_directory="../data/chat_messages", url_col
                     "Original URL": original_url,
                     "File Path": os.path.abspath(file_path)
                 })
+                bar.update(i + 1)
                 continue
 
             df = chat_download(original_url)
             if df is not None:
-                df.to_csv(file_path, index=False, encoding="utf-8-sig")
+                save_to_csv(df, file_path)
                 download_records.append({
                     "Video URL": video_url,
                     "Original URL": original_url,
@@ -259,14 +277,13 @@ def list_original_urls(csv_file, base_directory="../data/chat_messages", url_col
                 })
         except Exception as e:
             print(f"エラーが発生しました: {e} - URL: {original_url}")
+        bar.update(i + 1)
 
     print("\nすべての処理が完了しました")
     return pd.DataFrame(download_records)
 
-
 if __name__ == "__main__":
-    csv_file = "../data/test_processed.csv"
-    result_df = list_original_urls(csv_file, delete_multiple=True)
+    csv_file = "../data/にじさんじ　切り抜き_20250102_202807.csv"
+    result_df = list_original_urls(csv_file, delete_multiple=True, url_column="Original videoURL")
     output_csv = "../data/download_results.csv"
-    result_df.to_csv(output_csv, index=False, encoding="utf-8-sig")
-    print(f"ダウンロード結果を {output_csv} に保存しました。")
+    save_to_csv(result_df, output_csv)

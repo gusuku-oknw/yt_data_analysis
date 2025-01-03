@@ -73,7 +73,7 @@ def extract_vocals(audio_file):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         print(f"Demucsを実行中 (デバイス: {device})...")
 
-        command = ['demucs', '-d', device, '-o', root_directory, audio_file]
+        command = ['demucs', '-d', device, '-o', root_directory, audio_file, '--two-stems STEM']
         subprocess.run(command, check=True)
 
         # ファイルの存在を再確認
@@ -91,3 +91,15 @@ def extract_vocals(audio_file):
         print(f"予期しないエラーが発生しました: {e}")
 
     return None
+
+if __name__ == "__main__":
+    # テスト用のURL
+    url = "https://www.youtube.com/watch?v=WJoNiYYxgz8"
+
+    # ダウンロード
+    # source_path = download_yt_sound(url, output_dir="../data/audio")
+    clip_path = download_yt_sound(url, output_dir="../data/audio")
+
+    # ボーカル抽出
+    clip_path = extract_vocals(clip_path)
+    print("処理が完了しました。")

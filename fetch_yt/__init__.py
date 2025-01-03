@@ -2,8 +2,6 @@ from search_csv_chat_download import list_original_urls
 from datetime import datetime
 import os
 import pandas as pd
-from matplotlib import rcParams
-from matplotlib.ticker import FuncFormatter
 from analyze_chat_emotions import main_emotion_analysis
 from chat_download import get_video_id_from_url, remove_query_params
 from audio_transcription_comparator import download_yt_sound, audio_transcription2csv, compare_segments
