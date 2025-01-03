@@ -33,10 +33,18 @@ class ImageText:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "この画像にかかれている文字と感情を抽出してください。なかった場合なんと言っていそうですか？\n"
-                                             "[Joy, Sadness, Anticipation, Surprise, Anger, Fear, Disgust, Trust]の中で選んでください。テキストのみで出力してください。\n"
-                                             "例: Hello, World!: Joy\n"
-                                             "None: Anger"},
+                    {
+                        "type": "text",
+                        "text": (
+                            "この画像にかかれている文字と感情を抽出してください。"
+                            "なかった場合なんと言っていそうですか？わからなければNoneとしてください\n"
+                            "[Joy, Sadness, Anticipation, Surprise, Anger, Fear, Disgust, Trust]"
+                            "の中で選んでください。テキストのみで出力してください。\n"
+                            "例: Hello, World!: Joy\n"
+                            "None: Anger"
+                            "None: None"  # この行は必須です (最後の行以外にも追加可能
+                        )
+                    },
                     {
                         "type": "image_url",
                         "image_url": {
@@ -197,14 +205,13 @@ def remove_query_params(url):
         return f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
 
 
-def chat_download(url):
+def chat_download_data(url):
     """
-    指定されたYouTube URLからチャットデータを取得し、メンバー情報を数値データに変換し保存する。
+    指定されたYouTube URLからチャットデータを取得し、メンバー情報を数値データに変換しDataFrameを返す。
 
     Parameters:
         url (str): YouTube動画のURL。
         end_time (str): チャットデータ取得の終了時間 (例: '0:01:00')。
-        output_file (str): 保存するCSVファイルの名前。
 
     Returns:
         pd.DataFrame: チャットデータ。
@@ -212,57 +219,50 @@ def chat_download(url):
     messages_data = []
 
     try:
-        # チャットデータを取得
+        # ChatDownloader を使ってチャットデータを取得
         chat = ChatDownloader().get_chat(url)
 
-        # チャットメッセージをループして処理
         for message in chat:
-            # 基本データの抽出
             time_in_seconds = message.get('time_in_seconds', 'N/A')
             message_text = message.get('message', 'N/A')
             amount = message.get('money', {}).get('amount', 'N/A')
 
-            # 投稿者情報
             author = message.get('author', {})
             author_details = {
                 "Author Name": author.get('name', 'N/A'),
                 "Author ID": author.get('id', 'N/A'),
             }
 
-            # バッジ情報の抽出
+            # メンバー情報抽出
             badges = author.get('badges', [])
-            member_info = 0  # デフォルト値は0（非メンバー）
+            member_info = 0  # デフォルト0（非メンバー）
             badge_icon_url = ""
             for badge in badges:
                 title = badge.get('title', 'N/A')
                 icons = badge.get('icons', [])
                 if icons:
-                    # 最初のURLのみを保存
                     badge_icon_url = icons[0].get('url', '')
 
-                # "Member"が含まれる場合のみメンバー情報を抽出し、数値に変換
+                # "Member"が含まれる場合のみ数値変換
                 if "Member" in title:
                     match = re.search(r"(\d+)\s*(year|month)", title, re.IGNORECASE)
                     if match:
                         number = int(match.group(1))
                         unit = match.group(2).lower()
-                        # 年数を月数に変換（必要なら）
                         if unit == "year":
                             member_info = number * 12
                         elif unit == "month":
                             member_info = number
 
-            # スタンプ画像（emotes, sticker_images）の最初のURLを取得
+            # スタンプ画像URLの抽出
             stamp_image_url = None
             if 'emotes' in message:
                 for emote in message['emotes']:
                     if 'images' in emote:
-                        # 最初の画像URLを取得
                         stamp_image_url = emote['images'][0].get('url', None)
-                        break  # 最初のURLのみ取得して終了
+                        break
 
             if not stamp_image_url and 'sticker_images' in message:
-                # sticker_images から最初のURLを取得
                 stamp_image_url = message['sticker_images'][0].get('url', None)
 
             # データをリストに追加
@@ -271,8 +271,8 @@ def chat_download(url):
                 "Message": message_text,
                 "Amount": amount,
                 **author_details,
-                "Member Info (Months)": member_info,  # メンバー情報（月数）
-                "Badge Icon URL": badge_icon_url,  # 最初のアイコンURL
+                "Member Info (Months)": member_info,
+                "Badge Icon URL": badge_icon_url,
                 "Stamp Image URL": stamp_image_url if stamp_image_url else "No stamp image"
             })
 
@@ -438,7 +438,7 @@ def list_original_urls(csv_file, base_directory="../data/chat_messages", url_col
                 bar.update(i + 1)
                 continue
 
-            df = chat_download(original_url)
+            df = chat_download_data(original_url)
 
             if df is not None:
                 save_to_csv(df, file_path)
@@ -455,7 +455,7 @@ def list_original_urls(csv_file, base_directory="../data/chat_messages", url_col
     return pd.DataFrame(download_records)
 
 if __name__ == "__main__":
-    chat_download("https://www.youtube.com/watch?v=a4KN-5n0YF0")
+    chat_download_data("https://www.youtube.com/watch?v=a4KN-5n0YF0")
 
     # csv_file = "../data/にじさんじ　切り抜き_20250102_202807.csv"
     # result_df = list_original_urls(csv_file, delete_multiple=True, url_column="Original videoURL")
