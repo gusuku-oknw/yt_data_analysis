@@ -148,10 +148,12 @@ def remove_query_params(url):
 
 def chat_download(url):
     """
-    指定されたURLのチャットデータをダウンロードし、DataFrameを返す。
+    指定されたYouTube URLからチャットデータを取得し、メンバー情報を数値データに変換し保存する。
 
     Parameters:
-        url (str): チャットデータを取得するURL。
+        url (str): YouTube動画のURL。
+        end_time (str): チャットデータ取得の終了時間 (例: '0:01:00')。
+        output_file (str): 保存するCSVファイルの名前。
 
     Returns:
         pd.DataFrame: チャットデータ。
@@ -159,22 +161,79 @@ def chat_download(url):
     messages_data = []
 
     try:
-        chat = ChatDownloader().get_chat(url, message_groups=['messages', 'superchat'])
-        bar = progressbar.ProgressBar(max_value=progressbar.UnknownLength)  # プログレスバーを設定
+        # チャットデータを取得
+        chat = ChatDownloader().get_chat(url)
 
-        for i, message in enumerate(chat):
+        # チャットメッセージをループして処理
+        for message in chat:
+            # 基本データの抽出
+            time_in_seconds = message.get('time_in_seconds', 'N/A')
+            message_text = message.get('message', 'N/A')
+            amount = message.get('money', {}).get('amount', 'N/A')
+
+            # 投稿者情報
+            author = message.get('author', {})
+            author_details = {
+                "Author Name": author.get('name', 'N/A'),
+                "Author ID": author.get('id', 'N/A'),
+            }
+
+            # バッジ情報の抽出
+            badges = author.get('badges', [])
+            member_info = 0  # デフォルト値は0（非メンバー）
+            badge_icon_url = ""
+            for badge in badges:
+                title = badge.get('title', 'N/A')
+                icons = badge.get('icons', [])
+                if icons:
+                    # 最初のURLのみを保存
+                    badge_icon_url = icons[0].get('url', '')
+
+                # "Member"が含まれる場合のみメンバー情報を抽出し、数値に変換
+                if "Member" in title:
+                    match = re.search(r"(\d+)\s*(year|month)", title, re.IGNORECASE)
+                    if match:
+                        number = int(match.group(1))
+                        unit = match.group(2).lower()
+                        # 年数を月数に変換（必要なら）
+                        if unit == "year":
+                            member_info = number * 12
+                        elif unit == "month":
+                            member_info = number
+
+            # スタンプ画像（emotes, sticker_images）の最初のURLを取得
+            stamp_image_url = None
+            if 'emotes' in message:
+                for emote in message['emotes']:
+                    if 'images' in emote:
+                        # 最初の画像URLを取得
+                        stamp_image_url = emote['images'][0].get('url', None)
+                        break  # 最初のURLのみ取得して終了
+
+            if not stamp_image_url and 'sticker_images' in message:
+                # sticker_images から最初のURLを取得
+                stamp_image_url = message['sticker_images'][0].get('url', None)
+
+            # データをリストに追加
             messages_data.append({
-                "Time_in_seconds": message.get('time_in_seconds'),
-                "Message": message.get('message'),
-                "Amount": message.get('money', {}).get('amount')
+                "Time_in_seconds": time_in_seconds,
+                "Message": message_text,
+                "Amount": amount,
+                **author_details,
+                "Member Info (Months)": member_info,  # メンバー情報（月数）
+                "Badge Icon URL": badge_icon_url,  # 最初のアイコンURL
+                "Stamp Image URL": stamp_image_url if stamp_image_url else "No stamp image"
             })
-            bar.update(i + 1)  # プログレスバーを更新
 
     except Exception as e:
         print(f"Error during chat download: {e}")
         return None
 
-    return pd.DataFrame(messages_data)
+    # DataFrameに変換して返す
+    df = pd.DataFrame(messages_data)
+
+    return df
+
 
 def save_to_csv(dataframe, file_path):
     """
