@@ -283,9 +283,6 @@ if __name__ == "__main__":
         # 例: '123': 'ハートのスタンプ'
     }
 
-    # ImageText のインスタンスを作成
-    image_text_extractor = ImageText()
-
     if chat_data is not None:
         # チャットデータにスタンプの文字・感情を付与し、stamp_mapping も更新
         df, updated_stamp_mapping = message_stamp2text(
