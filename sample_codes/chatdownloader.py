@@ -7,7 +7,7 @@ url = "https://www.youtube.com/watch?v=-1FjQf5ipUA"
 chat = ChatDownloader()
 
 # チャットメッセージを取得
-messages = chat.get_chat(url)
+messages = chat.get_chat(url, end_time='0:01:00')
 
 # メッセージをループして処理
 for message in messages:
@@ -16,31 +16,48 @@ for message in messages:
     message_text = message.get('message', 'No message text')
     timestamp = message.get('timestamp', 'No timestamp')
 
-    # 画像URLを格納するリスト
-    all_images = []
+    # スタンプ画像を格納するリスト
+    stamp_images = []
+    badge_details = []
 
     # 1. スタンプ画像（emotes）
     if 'emotes' in message:
         for emote in message['emotes']:
             if 'images' in emote:
-                all_images.extend([img.get('url') for img in emote['images'] if 'url' in img])
+                stamp_images.extend([img.get('url') for img in emote['images'] if 'url' in img])
 
-    # 2. 著者画像
-    if 'images' in author:
-        all_images.extend([img.get('url') for img in author['images'] if 'url' in img])
-
-    # 3. バッジ画像
+    # 2. バッジ情報
     if 'badges' in author:
         for badge in author['badges']:
-            if 'icons' in badge:
-                all_images.extend([icon.get('url') for icon in badge['icons'] if 'url' in icon])
+            # バッジ詳細情報の収集
+            badge_info = {
+                'title': badge.get('title'),
+                'id': badge.get('id'),
+                'name': badge.get('name'),
+                'version': badge.get('version'),
+                'icon_name': badge.get('icon_name'),
+                'icons': [icon.get('url') for icon in badge.get('icons', []) if 'url' in icon],
+                'description': badge.get('description'),
+                'alternative_title': badge.get('alternative_title'),
+                'click_action': badge.get('click_action'),
+                'click_url': badge.get('click_url'),
+            }
+            badge_details.append(badge_info)
 
     # メッセージを表示
     print(f"Timestamp: {timestamp}")
     print(f"Author: {author.get('name', 'Unknown')}")
     print(f"Message: {message_text}")
-    if all_images:
-        print(f"Images: {all_images}")
+    print(f"Stamp Images: {stamp_images if stamp_images else 'No stamp images found.'}")
+    print("Badge Details:")
+    if badge_details:
+        for i, badge in enumerate(badge_details, 1):
+            print(f"  Badge {i}:")
+            for key, value in badge.items():
+                if value is not None:
+                    print(f"    {key}: {value}")
+                else:
+                    print(f"    {key}: N/A")
     else:
-        print("No images found.")
+        print("  No badges found.")
     print("-" * 40)
