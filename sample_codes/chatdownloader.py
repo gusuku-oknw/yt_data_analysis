@@ -1,14 +1,16 @@
 from chat_downloader import ChatDownloader
 import pandas as pd
+import re  # 数値データ抽出用
 
 
-def download_chat_data(url, end_time='0:01:00'):
+def download_chat_data(url, end_time='0:01:00', output_file='chat_data_with_members.csv'):
     """
-    指定されたYouTube URLからチャットデータを取得し、DataFrameに変換する。
+    指定されたYouTube URLからチャットデータを取得し、メンバー情報を数値データに変換し保存する。
 
     Parameters:
         url (str): YouTube動画のURL。
         end_time (str): チャットデータ取得の終了時間 (例: '0:01:00')。
+        output_file (str): 保存するCSVファイルの名前。
 
     Returns:
         pd.DataFrame: チャットデータ。
@@ -35,35 +37,39 @@ def download_chat_data(url, end_time='0:01:00'):
 
             # バッジ情報の抽出
             badges = author.get('badges', [])
-            badge_details = []
+            member_info = 0  # デフォルト値は0（非メンバー）
+            badge_icon_url = ""
             for badge in badges:
-                badge_details.append({
-                    "title": badge.get('title', 'N/A'),
-                    "id": badge.get('id', 'N/A'),
-                    "name": badge.get('name', 'N/A'),
-                    "version": badge.get('version', 'N/A'),
-                    "icon_name": badge.get('icon_name', 'N/A'),
-                    "icons": [icon.get('url') for icon in badge.get('icons', []) if 'url' in icon],
-                    "description": badge.get('description', 'N/A'),
-                    "alternative_title": badge.get('alternative_title', 'N/A'),
-                    "click_action": badge.get('click_action', 'N/A'),
-                    "click_url": badge.get('click_url', 'N/A'),
-                })
+                title = badge.get('title', 'N/A')
+                icons = badge.get('icons', [])
+                if icons:
+                    # 最初のURLのみを保存
+                    badge_icon_url = icons[0].get('url', '')
 
-            # スタンプ画像（emotes, sticker_images）をリストにまとめる
-            stamp_images = []
+                # "Member"が含まれる場合のみメンバー情報を抽出し、数値に変換
+                if "Member" in title:
+                    match = re.search(r"(\d+)\s*(year|month)", title, re.IGNORECASE)
+                    if match:
+                        number = int(match.group(1))
+                        unit = match.group(2).lower()
+                        # 年数を月数に変換（必要なら）
+                        if unit == "year":
+                            member_info = number * 12
+                        elif unit == "month":
+                            member_info = number
 
-            # emotes（テキストスタンプや絵文字など）
+            # スタンプ画像（emotes, sticker_images）の最初のURLを取得
+            stamp_image_url = None
             if 'emotes' in message:
                 for emote in message['emotes']:
                     if 'images' in emote:
-                        # 複数の画像サイズがある場合、URLがリストで格納されていることがある
-                        stamp_images.extend([img.get('url') for img in emote['images'] if 'url' in img])
+                        # 最初の画像URLを取得
+                        stamp_image_url = emote['images'][0].get('url', None)
+                        break  # 最初のURLのみ取得して終了
 
-            # sticker_images（YouTubeのスタンプなど）
-            if 'sticker_images' in message:
-                # 複数パターンの画像サイズがある場合はリスト
-                stamp_images.extend([img.get('url') for img in message['sticker_images'] if 'url' in img])
+            if not stamp_image_url and 'sticker_images' in message:
+                # sticker_images から最初のURLを取得
+                stamp_image_url = message['sticker_images'][0].get('url', None)
 
             # データをリストに追加
             messages_data.append({
@@ -71,9 +77,9 @@ def download_chat_data(url, end_time='0:01:00'):
                 "Message": message_text,
                 "Amount": amount,
                 **author_details,
-                "Badge Details": badge_details,
-                # セミコロンで区切って文字列化
-                "Stamp Images": ";".join(stamp_images) if stamp_images else "No stamp images"
+                "Member Info (Months)": member_info,  # メンバー情報（月数）
+                "Badge Icon URL": badge_icon_url,  # 最初のアイコンURL
+                "Stamp Image URL": stamp_image_url if stamp_image_url else "No stamp image"
             })
 
     except Exception as e:
@@ -81,19 +87,19 @@ def download_chat_data(url, end_time='0:01:00'):
         return None
 
     # DataFrameに変換して返す
-    return pd.DataFrame(messages_data)
+    df = pd.DataFrame(messages_data)
+
+    # DataFrameをCSVに保存
+    df.to_csv(output_file, index=False, encoding="utf-8-sig")
+    print(f"チャットデータを '{output_file}' に保存しました。")
+    return df
 
 
 if __name__ == "__main__":
     # YouTubeライブのURL
     url = "https://www.youtube.com/watch?v=-1FjQf5ipUA"
 
-    # チャットデータを取得
+    # チャットデータを取得して保存
     chat_data = download_chat_data(url)
     if chat_data is not None:
-        # 先頭5行を表示
         print(chat_data.head())
-
-        # CSVに保存（文字化け防止にutf-8-sigが一般的）
-        chat_data.to_csv("chat_data.csv", index=False, encoding="utf-8-sig")
-        print("CSVファイルに保存しました: chat_data.csv")
