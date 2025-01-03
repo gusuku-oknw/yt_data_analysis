@@ -1,4 +1,3 @@
-# これはサンプルの Python スクリプトです。
 from datetime import datetime
 from chat_downloader import ChatDownloader
 import pandas as pd
@@ -9,6 +8,10 @@ import re
 import progressbar
 from openai import OpenAI
 from dotenv import load_dotenv
+
+# ===== 追加: SQLAlchemyエンジンのインポート =====
+from sqlalchemy import create_engine, inspect
+
 
 class ImageText:
     def __init__(self):
@@ -68,6 +71,7 @@ class ImageText:
 
         return extracted
 
+
 # URLアンサンブル
 def split_urls(row):
     """
@@ -76,19 +80,6 @@ def split_urls(row):
     url_pattern = re.compile(r'https?://[^\s,]+')
     urls = url_pattern.findall(row)
     return filter_and_correct_urls(urls, allow_channels=False)
-
-def create_directory(base_directory):
-    """
-    保存先ディレクトリを作成。
-
-    Parameters:
-        base_directory (str): 基本のディレクトリパス。
-
-    Returns:
-        str: 作成したディレクトリのパス。
-    """
-    os.makedirs(base_directory, exist_ok=True)
-    return base_directory
 
 # URLフィルタリング
 def filter_and_correct_urls(url_list, allow_playlists=False, allow_channels=False, exclude_twitch=True):
@@ -143,6 +134,7 @@ def filter_and_correct_urls(url_list, allow_playlists=False, allow_channels=Fals
 
     return valid_urls
 
+
 # URLから動画IDを取得
 def get_video_id_from_url(url):
     """
@@ -187,16 +179,11 @@ def remove_query_params(url):
 
     Returns:
         str: 修正されたURL。
-
-    詳細:
-        - URLを解析してクエリパラメータを抽出します。
-        - "v=" パラメータが存在する場合はそれを保持してURLを再構築します。
-        - "v=" パラメータが存在しない場合は、クエリ部分を完全に削除します。
     """
     parsed_url = urlparse(url)
     query_params = parse_qs(parsed_url.query)
 
-    # v= パラメータが存在する場合は保持
+    # v= パラメータが存在する場合はそれを保持
     if "v" in query_params:
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
         return f"{base_url}?v={query_params['v'][0]}"
@@ -211,7 +198,6 @@ def chat_download_data(url):
 
     Parameters:
         url (str): YouTube動画のURL。
-        end_time (str): チャットデータ取得の終了時間 (例: '0:01:00')。
 
     Returns:
         pd.DataFrame: チャットデータ。
@@ -286,17 +272,6 @@ def chat_download_data(url):
     return df
 
 
-def save_to_csv(dataframe, file_path):
-    """
-    指定されたDataFrameをCSVファイルとして保存する。
-
-    Parameters:
-        dataframe (pd.DataFrame): 保存するデータ。
-        file_path (str): ファイルの保存先パス。
-    """
-    dataframe.to_csv(file_path, index=False, encoding="utf-8-sig")
-    print(f"データを {file_path} に保存しました。")
-
 def message_stamp2text(df, stamp_mapping, image_text_extractor):
     """
     DataFrame内のメッセージとスタンプ画像を処理し、新しいカラムを追加する。
@@ -338,7 +313,7 @@ def message_stamp2text(df, stamp_mapping, image_text_extractor):
             if row['Stamp Image URL'] != "No stamp image":
                 extracted_text = image_text_extractor.image2text(row['Stamp Image URL'])
                 stamp_text, stamp_emotion = extracted_text.split(": ", 1) if ": " in extracted_text else (
-                extracted_text, "Unknown")
+                    extracted_text, "Unknown")
                 stamp_texts.append(f"{stamp_description}: {stamp_text}")
                 stamp_emotions.append(stamp_emotion)
             else:
@@ -357,19 +332,49 @@ def message_stamp2text(df, stamp_mapping, image_text_extractor):
 
     return df
 
-def list_original_urls(csv_file, base_directory="../data/chat_messages", url_column="Original URL", video_url_column="Video URL", delete_multiple=False):
+
+# ===== 新規追加: DataFrameをSQLに保存する関数 =====
+def save_to_sql(dataframe, db_url, table_name="chat_data", if_exists="append"):
     """
-    指定されたCSVファイルのオリジナルURLカラムからURLを取得し、チャットをダウンロードする。
+    指定されたDataFrameをデータベースに保存する。
+
+    Parameters:
+        dataframe (pd.DataFrame): 保存するデータ。
+        db_url (str): "sqlite:///XXXX.db" などのDB接続URL。
+        table_name (str): 保存先テーブル名。
+        if_exists (str): テーブルが既に存在する場合の動作（replace, append, fail）。
+    """
+    # SQLAlchemyのエンジンを作成
+    engine = create_engine(db_url)
+
+    # DataFrameをSQLへ保存
+    dataframe.to_sql(table_name, con=engine, if_exists=if_exists, index=False)
+
+    print(f"データをデータベース({db_url})のテーブル '{table_name}' に保存しました。")
+
+
+def list_original_urls(
+    csv_file,
+    base_directory="../data/chat_messages",
+    url_column="Original URL",
+    video_url_column="Video URL",
+    delete_multiple=False,
+    db_url="sqlite:///chat_data.db",       # 保存先のDB URL
+):
+    """
+    指定されたCSVファイルのオリジナルURLカラムからURLを取得し、チャットをダウンロードして
+    データベースに保存する。
 
     Parameters:
         csv_file (str): CSVファイルのパス。
-        base_directory (str): チャットメッセージの保存先の基本ディレクトリ。
+        base_directory (str): チャットメッセージの保存先の基本ディレクトリ（不要なら使わない）。
         url_column (str): URLが記載されているカラム名。
         video_url_column (str): Video URLが記載されているカラム名。
         delete_multiple (bool): URLカラムに複数のURLがある場合、行を削除するかどうか。
+        db_url (str): データベース接続URL (例: "sqlite:///chat_data.db")。
 
     Returns:
-        pd.DataFrame: Video URL、Original URL、保存ファイルパスの対応表。
+        pd.DataFrame: Video URL、Original URL、保存先テーブル名などの対応表をDataFrameで返す。
     """
     try:
         df = pd.read_csv(csv_file, encoding="utf-8-sig")
@@ -389,8 +394,6 @@ def list_original_urls(csv_file, base_directory="../data/chat_messages", url_col
     except Exception as e:
         print(f"エラーが発生しました: {str(e)}")
         return pd.DataFrame()
-
-    target_directory = create_directory(base_directory)
 
     all_urls = []
     for _, row in urls.iterrows():
@@ -419,45 +422,67 @@ def list_original_urls(csv_file, base_directory="../data/chat_messages", url_col
     download_records = []
     bar = progressbar.ProgressBar(max_value=len(filtered_all_urls))  # プログレスバーを設定
 
+    # SQLAlchemyエンジンとインスペクターを作成
+    engine = create_engine(db_url)
+    inspector = inspect(engine)
+
     for i, item in enumerate(filtered_all_urls):
         video_url = item["Video URL"]
         original_url = item["Original URL"]
 
         try:
+            # 動画IDの取得
             video_id = get_video_id_from_url(remove_query_params(original_url))
-            file_name = f"{video_id}.csv"
-            file_path = os.path.join(target_directory, file_name)
 
-            if os.path.exists(file_path):
-                print(f"\rファイルが既に存在します。スキップします: {file_path}")
+            # テーブルの存在をチェック
+            if video_id in inspector.get_table_names():
+                print(f"既存テーブルが見つかりました。スキップします: {video_id}")
                 download_records.append({
                     "Video URL": video_url,
                     "Original URL": original_url,
-                    "File Path": os.path.abspath(file_path)
+                    "DB Table": video_id,
+                    "Video ID": video_id,
+                    "Status": "Skipped (Already Exists)"
                 })
                 bar.update(i + 1)
                 continue
 
-            df = chat_download_data(original_url)
+            # 新規ダウンロードと保存
+            df_chat = chat_download_data(original_url)
 
-            if df is not None:
-                save_to_csv(df, file_path)
+            if df_chat is not None and not df_chat.empty:
+                # ====== SQLへ保存 ======
+                save_to_sql(df_chat, db_url=db_url, table_name=video_id, if_exists="append")
+
                 download_records.append({
                     "Video URL": video_url,
                     "Original URL": original_url,
-                    "File Path": os.path.abspath(file_path)
+                    "DB Table": video_id,
+                    "Video ID": video_id,
+                    "Status": "Downloaded"
                 })
         except Exception as e:
             print(f"エラーが発生しました: {e} - URL: {original_url}")
         bar.update(i + 1)
 
     print("\nすべての処理が完了しました")
+
     return pd.DataFrame(download_records)
 
-if __name__ == "__main__":
-    chat_download_data("https://www.youtube.com/watch?v=a4KN-5n0YF0")
 
-    # csv_file = "../data/にじさんじ　切り抜き_20250102_202807.csv"
-    # result_df = list_original_urls(csv_file, delete_multiple=True, url_column="Original videoURL")
-    # output_csv = "../data/download_results.csv"
-    # save_to_csv(result_df, output_csv)
+if __name__ == "__main__":
+    # # 単体テスト的に呼び出す場合
+    # # 例: 指定URLのチャットを取得し、chat_data.db の chat_data テーブルに保存
+    # df_test = chat_download_data("https://www.youtube.com/watch?v=a4KN-5n0YF0")
+    # if df_test is not None and not df_test.empty:
+    #     save_to_sql(df_test, db_url="sqlite:///chat_data.db", table_name="chat_data_sample")
+
+    # 実運用例: CSVファイルに含まれるURLを一括で取り込み、SQLに保存
+    csv_file = "../data/にじさんじ　切り抜き_20250102_202807.csv"
+    result_df = list_original_urls(
+        csv_file,
+        delete_multiple=True,
+        url_column="Original videoURL",
+        db_url="sqlite:///chat_data.db",
+    )
+    result_df.to_csv("../data/download_results.csv", index=False, encoding="utf-8-sig")
