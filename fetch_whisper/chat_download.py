@@ -275,6 +275,8 @@ class DBHandler:
         self.create_channel_id_table()
         self.create_stamp_data_table()
         self.create_channel_videos_table()
+        self.create_emotion_analysis_table()
+        self.create_segment_comparisons_table()
 
     def create_channel_id_table(self):
         """
@@ -318,12 +320,46 @@ class DBHandler:
             video_id TEXT NOT NULL,
             video_url TEXT NOT NULL,
             video_type TEXT NOT NULL,
+            file_path TEXT,
             created_at TEXT
         )
         """)
         with self.engine.begin() as conn:
             conn.execute(create_table_query)
         print("Channel_videos テーブルを作成しました（または既に存在します）。")
+
+    def create_emotion_analysis_table(self):
+        create_table_query = text("""
+        CREATE TABLE IF NOT EXISTS Emotion_analysis (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            video_id TEXT NOT NULL,
+            analysis_method TEXT NOT NULL,
+            sentiment REAL,
+            weime REAL,
+            mlask REAL,
+            created_at TEXT
+        )
+        """)
+        with self.engine.begin() as conn:
+            conn.execute(create_table_query)
+        print("Emotion_analysis テーブルを作成しました（または既に存在します）。")
+
+    def create_segment_comparisons_table(self):
+        create_table_query = text("""
+        CREATE TABLE IF NOT EXISTS Segment_comparisons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_video_id TEXT NOT NULL,
+            clip_video_id TEXT NOT NULL,
+            match_text TEXT,
+            source_text TEXT,
+            clip_text TEXT,
+            similarity REAL,
+            created_at TEXT
+        )
+        """)
+        with self.engine.begin() as conn:
+            conn.execute(create_table_query)
+        print("Segment_comparisons テーブルを作成しました（または既に存在します）。")
 
     def count_stamp_occurrences(self, channel_id, stamp_code):
         query = text("""
@@ -449,11 +485,11 @@ class DBHandler:
             self.save_to_sql(df_upd, "Channel_id", primary_keys=["channel_id"])
 
     # -------------------------------------------------------------------------
-    # 新設: Channel_videos テーブル への動画情報アップサート
+    # Channel_videos テーブル への動画情報アップサート
     # -------------------------------------------------------------------------
-    def upsert_channel_videos(self, channel_id, video_id, video_url, video_type):
+    def upsert_channel_videos(self, channel_id, video_id, video_url, video_type, file_path=None):
         """
-        Channel_videos テーブルに (channel_id, video_id, video_url, video_type) を登録
+        Channel_videos テーブルに (channel_id, video_id, video_url, video_type, file_path) を登録
         """
         # 既にあるかどうか確認
         select_query = text("""
@@ -470,8 +506,8 @@ class DBHandler:
 
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         insert_query = text("""
-            INSERT INTO Channel_videos (channel_id, video_id, video_url, video_type, created_at)
-            VALUES (:ch_id, :v_id, :v_url, :v_type, :created_at)
+            INSERT INTO Channel_videos (channel_id, video_id, video_url, video_type, file_path, created_at)
+            VALUES (:ch_id, :v_id, :v_url, :v_type, :f_path, :created_at)
         """)
         with self.engine.begin() as conn:
             conn.execute(insert_query, {
@@ -479,6 +515,7 @@ class DBHandler:
                 "v_id": video_id,
                 "v_url": video_url,
                 "v_type": video_type,
+                "f_path": file_path,
                 "created_at": now_str
             })
         print(f"[Channel_videos] 新規登録: {channel_id} - {video_id}")
@@ -492,6 +529,98 @@ class DBHandler:
             table_name="Stamp_data",
             primary_keys=["channel_id", "stamp_code", "stamp_text", "stamp_emotion", "created_at"]
         )
+
+    # -------------------------------------------------------------------------
+    # Emotion_analysis テーブルへの保存
+    # -------------------------------------------------------------------------
+    def save_emotion_analysis(self, video_id, analysis_results):
+        """
+        analysis_results は以下の形式を想定:
+        {
+            "sentiment": float,
+            "weime": float,
+            "mlask": float
+        }
+        """
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        data = {
+            "video_id": video_id,
+            "analysis_method": "default",  # 必要に応じて変更
+            "sentiment": analysis_results.get("sentiment"),
+            "weime": analysis_results.get("weime"),
+            "mlask": analysis_results.get("mlask"),
+            "created_at": now_str
+        }
+        df = pd.DataFrame([data])
+        self.save_to_sql(df, "Emotion_analysis", primary_keys=["video_id", "analysis_method"])
+        print(f"[Emotion_analysis] 保存しました: {video_id}")
+
+    # -------------------------------------------------------------------------
+    # Segment_comparisons テーブルへの保存
+    # -------------------------------------------------------------------------
+    def save_segment_comparisons(self, source_video_id, clip_video_id, matches):
+        """
+        matches は以下の形式を想定:
+        [
+            {
+                "clip_text": "切り抜きテキスト" または None,
+                "clip_start": float または None,
+                "clip_end": float または None,
+                "source_text": "元テキスト" または None,
+                "source_start": float または None,
+                "source_end": float または None,
+                "similarity": float または None
+            },
+            ...
+        ]
+        """
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        data = []
+        for match in matches:
+            # 一致していない場合の処理
+            match_text = None
+            if match.get("clip_text") and match.get("source_text"):
+                match_text = f"{match['clip_text']} => {match['source_text']}"
+
+            record = {
+                "source_video_id": source_video_id,
+                "clip_video_id": clip_video_id,
+                "match_text": match_text,
+                "source_text": match.get("source_text"),
+                "clip_text": match.get("clip_text"),
+                "similarity": match.get("similarity"),
+                "created_at": now_str
+            }
+            data.append(record)
+
+        if data:
+            df = pd.DataFrame(data)
+            self.save_to_sql(df, "Segment_comparisons", primary_keys=["source_video_id", "clip_video_id", "match_text"])
+            print(f"[Segment_comparisons] {len(data)} レコード保存しました。")
+        else:
+            print("[Segment_comparisons] 保存するデータがありません。")
+
+    # 動画IDテーブルを取得する関数
+    def fetch_table_from_db(self, video_id, db_handler):
+        """
+        動画IDに対応するテーブルを取得します。
+        """
+        table_name = f"{video_id}"
+        try:
+            # テーブルの存在確認
+            query_check = f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
+            result = pd.read_sql(query_check, db_handler.engine)
+            if result.empty:
+                print(f"テーブルが存在しません: {table_name}")
+                return None
+
+            # テーブルデータの取得
+            query_fetch = f"SELECT * FROM {table_name}"
+            table_data = pd.read_sql(query_fetch, db_handler.engine)
+            return table_data
+        except Exception as e:
+            print(f"DB取得エラー: {e}")
+            return None
 
 
 # =============================================================================

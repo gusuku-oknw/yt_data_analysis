@@ -1,6 +1,4 @@
 import os
-from pathlib import Path
-import numpy as np
 import pandas as pd
 import re
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
@@ -8,6 +6,10 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from mlask import MLAsk
+import logging
+
+# ロギングの設定
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class EmotionAnalyzer:
@@ -21,7 +23,7 @@ class EmotionAnalyzer:
         コンストラクタ: モデルのロードやデバイスの設定などを行う
         """
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"使用デバイス: {self.device}")
+        logging.info(f"使用デバイス: {self.device}")
 
         # モデルの準備 (sentiment)
         self.checkpoint_sentiment = checkpoint_sentiment
@@ -144,7 +146,7 @@ class EmotionAnalyzer:
     # -----------------------------------
     # メイン処理
     # -----------------------------------
-    def analysis_emotion(self, file_path, analysis_methods=["sentiment"]):
+    def analysis_emotion(self, df, analysis_methods=["sentiment"]):
         """
         メイン処理関数:
         1. データ読み込み・前処理
@@ -160,35 +162,24 @@ class EmotionAnalyzer:
             pd.DataFrame: 最終的な分析結果のデータフレーム。
         """
         # データ読み込みと前処理
-        df = pd.read_csv(str(Path(file_path)).replace("\u3000", "　"))
         df = self.preprocess(df)
         messages = df["Message"].tolist()
 
-        # 結果を保存するファイルパス生成
-        file_base_name = os.path.splitext(os.path.basename(file_path))[0]
-        save_file_name = f"{file_base_name}_analysis.csv"
-        save_path = os.path.join(self.save_dir, save_file_name)
-
-        # 既存の結果があれば読み込み、なければオリジナルdfを使用
-        if os.path.exists(save_path):
-            df_existing = pd.read_csv(save_path)
-            print(f"既存の分析結果を読み込みます: {save_path}")
-        else:
-            df_existing = df.copy()
+        df_existing = df.copy()
 
         # 各分析方法に対して分析実行（既に結果カラムがある場合はスキップ）
         for method in analysis_methods:
-            print(f"選択された感情分析方法: {method}")
+            logging.info(f"選択された感情分析方法: {method}")
 
             # 既に該当する結果が存在するかチェック
             if method == "sentiment" and "Sentiment_Label" in df_existing.columns:
-                print("Sentiment結果は既に存在します。スキップします。")
+                logging.info("Sentiment結果は既に存在します。スキップします。")
                 continue
             if method == "weime" and "Weime_Label" in df_existing.columns:
-                print("Weime結果は既に存在します。スキップします。")
+                logging.info("Weime結果は既に存在します。スキップします。")
                 continue
             if method == "mlask" and "MLAsk_Emotion" in df_existing.columns:
-                print("MLAsk結果は既に存在します。スキップします。")
+                logging.info("MLAsk結果は既に存在します。スキップします。")
                 continue
 
             # 分析実行
@@ -225,10 +216,6 @@ class EmotionAnalyzer:
                     df_existing["Weime_Label"] = (
                         df_existing[weime_columns].idxmax(axis=1).str.replace("Weime_", "")
                     )
-
-            # 途中結果を保存
-            df_existing.to_csv(save_path, index=False, encoding="utf-8-sig")
-            print(f"{method} の分析結果を保存しました: {save_path}")
 
         # 最終的なデータフレームをreturn
         return df_existing

@@ -248,14 +248,14 @@ class WhisperComparison:
         1) fast / slow いずれかでしきい値を下回った場合、"another_method" を呼ぶ
         2) 一致したソースは source_segments から除外 (再利用しない)
         3) 文字数の多い順にクリップを比較
-        4) Unmatched は「一致しなかったソース側のセグメント」を返す
+        4) Unmatched は「一致しなかったソース側のセグメント」を返すが、matchesと統合して返す
         """
 
         # 文字数の多いクリップから処理する
         # reverse=True で降順ソート
         clipping_segments = sorted(clipping_segments, key=lambda x: len(x["text"]), reverse=True)
 
-        matches = []
+        combined_results = []
         # 今回は「マッチしなかったクリップ」を保持せず、Source_segment だけを最後に返す
         # つまり、"unmatched_clips" は作らない
 
@@ -363,7 +363,8 @@ class WhisperComparison:
             result = process_clip(clip, fast_method, initial_threshold)
             if result["matched"]:
                 # matchesリストに追加
-                matches.extend(result["matches"])
+                for match in result["matches"]:
+                    combined_results.append(match)
             else:
                 unmatched_clips.append(clip)
 
@@ -376,7 +377,8 @@ class WhisperComparison:
             for clip in unmatched_clips:
                 result = process_clip(clip, slow_method, initial_threshold)
                 if result["matched"]:
-                    matches.extend(result["matches"])
+                    for match in result["matches"]:
+                        combined_results.append(match)
                 else:
                     still_unmatched_clips.append(clip)
 
@@ -387,15 +389,18 @@ class WhisperComparison:
         #   最終的に余っている source_segments が「未使用ソース」
         # --------------------------------------
         # matches で取り除かなかったもの = 一度も使われなかった source_segments
-        unmatched_source = []
         for seg in source_segments:
-            unmatched_source.append({
+            combined_results.append({
+                "clip_text": None,
+                "clip_start": None,
+                "clip_end": None,
                 "source_text": seg["text"],
                 "source_start": seg["start"],
-                "source_end": seg["end"]
+                "source_end": seg["end"],
+                "similarity": 0.0
             })
 
-        return matches, unmatched_source
+        return combined_results
 
 # -------------------------------------------------
 # (C) メイン実行例

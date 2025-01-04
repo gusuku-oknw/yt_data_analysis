@@ -2,8 +2,8 @@ import os
 from yt_dlp import YoutubeDL
 import subprocess
 import torch
-
-from chat_download import get_video_id_from_url, remove_query_params
+from yt_url_utils import YTURLUtils
+yt_utils = YTURLUtils()
 
 
 # YouTube動画または音声をダウンロード
@@ -22,7 +22,7 @@ def download_yt_sound(url, output_dir="../data/sound", audio_only=True):
     os.makedirs(output_dir, exist_ok=True)
 
     # 出力ファイル名を生成（拡張子なし）
-    video_id = get_video_id_from_url(remove_query_params(url))
+    video_id = yt_utils.get_video_id_from_url(yt_utils.remove_query_params(url))
     file_name = video_id  # 拡張子はFFmpegで付加
     file_path_no_ext = os.path.join(output_dir, file_name)
     file_path_with_ext = f"{file_path_no_ext}.mp3"
