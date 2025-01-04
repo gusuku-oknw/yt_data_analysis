@@ -621,50 +621,21 @@ class DBHandler:
     # -------------------------------------------------------------------------
     # Emotion_analysis テーブルへの保存
     # -------------------------------------------------------------------------
-    def save_emotion_analysis(self, video_id, analysis_results):
+    def save_emotion_analysis(self, video_id: str, analysis_results: pd.DataFrame):
         """
         感情分析結果を Emotion_analysis テーブルと動画IDテーブルに保存します。
+        analysis_results は pandas.DataFrame と仮定します。
         """
-        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        # データを適切な型に変換
-        def safe_float(value):
-            try:
-                return float(value) if value is not None else None
-            except (ValueError, TypeError):
-                return None
-
-        # 挿入データの整形
-        data = {
-            "video_id": video_id,  # video_id は文字列型
-            "created_at": now_str,
-            "sentiment_positive": safe_float(analysis_results.get("Sentiment_Positive")),
-            "sentiment_neutral": safe_float(analysis_results.get("Sentiment_Neutral")),
-            "sentiment_negative": safe_float(analysis_results.get("Sentiment_Negative")),
-            "sentiment_label": analysis_results.get("Sentiment_Label"),
-            "weime_joy": safe_float(analysis_results.get("Weime_Joy")),
-            "weime_sadness": safe_float(analysis_results.get("Weime_Sadness")),
-            "weime_anticipation": safe_float(analysis_results.get("Weime_Anticipation")),
-            "weime_surprise": safe_float(analysis_results.get("Weime_Surprise")),
-            "weime_anger": safe_float(analysis_results.get("Weime_Anger")),
-            "weime_fear": safe_float(analysis_results.get("Weime_Fear")),
-            "weime_disgust": safe_float(analysis_results.get("Weime_Disgust")),
-            "weime_trust": safe_float(analysis_results.get("Weime_Trust")),
-            "weime_label": analysis_results.get("Weime_Label"),
-            "mlask_emotion": analysis_results.get("MLAsk_Emotion"),
-        }
-
-        # データベースエンジン
         engine = self.engine
         metadata = MetaData()
+        segment_table_name = str(video_id)
 
         # 必要なカラムを定義
         required_columns = {
-            "video_id": String,  # video_id は文字列型
             "sentiment_positive": Float,
             "sentiment_neutral": Float,
             "sentiment_negative": Float,
-            "sentiment_label": String,
+            "sentiment_label": String,  # 文字列型に変更
             "weime_joy": Float,
             "weime_sadness": Float,
             "weime_anticipation": Float,
@@ -673,30 +644,14 @@ class DBHandler:
             "weime_fear": Float,
             "weime_disgust": Float,
             "weime_trust": Float,
-            "weime_label": String,
-            "mlask_emotion": String,
-            "created_at": String,
+            "weime_label": String,  # 文字列型に変更
+            "mlask_emotion": String,  # 文字列型に変更
         }
 
-        # 動画IDテーブルの存在とカラムの確認
-        segment_table_name = video_id
+        # テーブルの存在確認とカラムの追加
         with engine.connect() as conn:
             inspector = inspect(engine)
-            if segment_table_name in inspector.get_table_names():
-                # テーブルが存在する場合、カラムの存在を確認
-                existing_columns = [col['name'] for col in inspector.get_columns(segment_table_name)]
-                missing_columns = {name: dtype for name, dtype in required_columns.items() if
-                                   name not in existing_columns}
-
-                if missing_columns:
-                    print(f"テーブル '{segment_table_name}' に不足しているカラムがあります。追加します。")
-                    for col_name, col_type in missing_columns.items():
-                        alter_query = text(
-                            f"ALTER TABLE {segment_table_name} ADD COLUMN {col_name} {col_type.__visit_name__.upper()}"
-                        )
-                        conn.execute(alter_query)
-                        print(f"カラム '{col_name}' を追加しました。")
-            else:
+            if segment_table_name not in inspector.get_table_names():
                 # テーブルが存在しない場合、新規作成
                 print(f"テーブル '{segment_table_name}' が存在しません。新規作成します。")
                 video_table = Table(
@@ -706,15 +661,63 @@ class DBHandler:
                 )
                 metadata.create_all(engine)
                 print(f"テーブル '{segment_table_name}' を作成しました。")
+            else:
+                # テーブルが存在する場合、カラムの存在を確認
+                existing_columns = {col['name'] for col in inspector.get_columns(segment_table_name)}
+                missing_columns = {name: dtype for name, dtype in required_columns.items() if
+                                   name not in existing_columns}
 
-        # 動画IDテーブルにデータを追加
-        video_table = Table(segment_table_name, metadata, autoload_with=engine)
+                if missing_columns:
+                    print(f"テーブル '{segment_table_name}' に不足しているカラムがあります。追加します。")
+                    for col_name, col_type in missing_columns.items():
+                        alter_query = text(
+                            f"ALTER TABLE {segment_table_name} ADD COLUMN {col_name} {col_type.__visit_name__.upper()}"
+                        )
+                        try:
+                            conn.execute(alter_query)
+                            print(f"カラム '{col_name}' を追加しました。")
+                        except Exception as e:
+                            print(f"[ERROR] カラム追加時にエラーが発生しました: {e}")
+
+            # テーブルオブジェクトを取得
+            video_table = Table(segment_table_name, metadata, autoload_with=engine)
+
+        # データの準備と挿入
         with engine.connect() as conn:
-            # カラム型を確認
-            print(f"[DEBUG] テーブル '{segment_table_name}' のカラム情報: {inspector.get_columns(segment_table_name)}")
-            insert_stmt = insert(video_table).values(data)
-            conn.execute(insert_stmt)
-            print(f"[{segment_table_name}] にデータを追加しました。")
+            for index, row in analysis_results.iterrows():
+                # データを適切な型に変換
+                def safe_float(value):
+                    try:
+                        return float(value) if pd.notnull(value) else None
+                    except (ValueError, TypeError):
+                        return None
+
+                data = {
+                    "sentiment_positive": safe_float(row.get("Sentiment_Positive")),
+                    "sentiment_neutral": safe_float(row.get("Sentiment_Neutral")),
+                    "sentiment_negative": safe_float(row.get("Sentiment_Negative")),
+                    "sentiment_label": str(row.get("Sentiment_Label")),  # 文字列型
+                    "weime_joy": safe_float(row.get("Weime_Joy")),
+                    "weime_sadness": safe_float(row.get("Weime_Sadness")),
+                    "weime_anticipation": safe_float(row.get("Weime_Anticipation")),
+                    "weime_surprise": safe_float(row.get("Weime_Surprise")),
+                    "weime_anger": safe_float(row.get("Weime_Anger")),
+                    "weime_fear": safe_float(row.get("Weime_Fear")),
+                    "weime_disgust": safe_float(row.get("Weime_Disgust")),
+                    "weime_trust": safe_float(row.get("Weime_Trust")),
+                    "weime_label": str(row.get("Weime_Label")),  # 文字列型
+                    "mlask_emotion": str(row.get("MLAsk_Emotion")),  # 文字列型
+                }
+
+                # 挿入前にデバッグ出力
+                print(f"[DEBUG] 挿入データ: {data}")
+
+                # 挿入処理
+                try:
+                    conn.execute(insert(video_table).values(data))
+                    print(f"[INFO] データが正常に挿入されました: レコードインデックス {index}")
+                except Exception as e:
+                    print(f"[ERROR] データ挿入時にエラーが発生しました: {e}")
 
     # -------------------------------------------------------------------------
     # Segment_comparisons テーブルへの保存

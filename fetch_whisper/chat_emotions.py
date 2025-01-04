@@ -58,10 +58,10 @@ class EmotionAnalyzer:
             pd.DataFrame: 前処理済みデータフレーム。
         """
         # 時間が-1以上のデータのみを使用
-        df = df[df["Time_in_seconds"] >= 0].copy()
+        df = df[df["time_in_seconds"] >= 0].copy()
 
         # 時間を整数秒に丸める
-        df["Time_in_seconds"] = df["Time_in_seconds"].round().astype(int)
+        df["time_in_seconds"] = df["time_in_seconds"].round().astype(int)
 
         # メッセージのクリーンアップ関数
         def clean_message(x):
@@ -69,7 +69,7 @@ class EmotionAnalyzer:
             x = re.sub(r"[^\w\s]", "", x)
             return x.strip()
 
-        df["Message"] = df["Message"].apply(clean_message)
+        df["message"] = df["message"].apply(clean_message)
         return df
 
     # -----------------------------------
@@ -147,77 +147,83 @@ class EmotionAnalyzer:
     # メイン処理
     # -----------------------------------
     def analysis_emotion(self, df, analysis_methods=["sentiment"]):
-        """
-        メイン処理関数:
-        1. データ読み込み・前処理
-        2. 各分析手法での感情分析（既存結果があればスキップ）
-        3. 分析結果保存
-        4. 最終的なデータフレームを返却
+        # 全てのカラム名を小文字に変換
+        df.columns = df.columns.str.lower()
 
-        Parameters:
-            file_path (str): 入力CSVファイルのパス。
-            analysis_methods (list): 使用する感情分析手法のリスト（デフォルトは ["sentiment"]）。
+        # カラム確認
+        if "time_in_seconds" not in df.columns or df["time_in_seconds"].dropna().empty:
+            logging.error("'time_in_seconds' カラムが存在しないか、データが空です。")
+            return df
 
-        Returns:
-            pd.DataFrame: 最終的な分析結果のデータフレーム。
-        """
+        if "message" not in df.columns or df["message"].dropna().empty:
+            logging.error("'message' カラムが存在しないか、データが空です。")
+            return df
+
         # データ読み込みと前処理
         df = self.preprocess(df)
-        messages = df["Message"].tolist()
-
+        messages = df["message"].tolist()
         df_existing = df.copy()
 
-        # 各分析方法に対して分析実行（既に結果カラムがある場合はスキップ）
+        # 各分析方法に対して分析実行
         for method in analysis_methods:
             logging.info(f"選択された感情分析方法: {method}")
 
-            # 既に該当する結果が存在するかチェック
-            if method == "sentiment" and "Sentiment_Label" in df_existing.columns:
-                logging.info("Sentiment結果は既に存在します。スキップします。")
-                continue
-            if method == "weime" and "Weime_Label" in df_existing.columns:
-                logging.info("Weime結果は既に存在します。スキップします。")
-                continue
-            if method == "mlask" and "MLAsk_Emotion" in df_existing.columns:
-                logging.info("MLAsk結果は既に存在します。スキップします。")
+            # スキップ条件
+            if method == "sentiment" and not any(
+                    col.startswith("sentiment_") for col in df_existing.columns):
+                logging.info("Sentimentの結果が欠けています。分析を実行します。")
+            elif method == "weime" and not any(col.startswith("weime_") for col in df_existing.columns):
+                logging.info("Weimeの結果が欠けています。分析を実行します。")
+            elif method == "mlask" and "mlask_emotion" not in df_existing.columns:
+                logging.info("MLAskの結果が欠けています。分析を実行します。")
+            else:
+                logging.info(f"{method} の結果が既に存在します。スキップします。")
                 continue
 
             # 分析実行
             if method == "mlask":
-                df_existing["MLAsk_Emotion"] = self.analyze_sentiment(messages, method=method)
+                logging.info("MLAsk 感情分析を実行中...")
+                df_existing["mlask_emotion"] = self.analyze_sentiment(messages, method=method)
             else:
                 all_scores = []
                 batch_size = 64
                 for i in tqdm(range(0, len(messages), batch_size), desc=f"{method} 感情分析中"):
-                    batch_messages = messages[i : i + batch_size]
-                    all_scores.extend(self.analyze_sentiment(batch_messages, method=method))
+                    batch_messages = messages[i: i + batch_size]
+                    analyzed_scores = self.analyze_sentiment(batch_messages, method=method)
+
+                    if not analyzed_scores or all(score is None for score in analyzed_scores):
+                        logging.error(f"{method} の分析結果が無効です: {analyzed_scores}")
+                        continue
+
+                    all_scores.extend(analyzed_scores)
 
                 if method == "sentiment":
                     for i, sentiment in enumerate(self.sentiment_names):
-                        col = f"Sentiment_{sentiment.capitalize()}"
+                        col = f"sentiment_{sentiment.lower()}"  # 小文字に統一
                         df_existing[col] = [scores[i] for scores in all_scores]
 
-                    sentiment_columns = [f"Sentiment_{sent.capitalize()}" for sent in self.sentiment_names]
-                    # 最もスコアが高い列をラベル化
-                    df_existing["Sentiment_Label"] = (
+                    sentiment_columns = [f"sentiment_{sent.lower()}" for sent in self.sentiment_names]
+                    df_existing["sentiment_label"] = (
                         df_existing[sentiment_columns]
                         .idxmax(axis=1)
-                        .str.replace("Sentiment_", "")
+                        .str.replace("sentiment_", "")
                         .str.lower()
                     )
 
                 elif method == "weime":
                     for i, emotion in enumerate(self.emotion_names):
-                        col = f"Weime_{emotion}"
+                        col = f"weime_{emotion.lower()}"  # 小文字に統一
                         df_existing[col] = [scores[i] for scores in all_scores]
 
-                    weime_columns = [f"Weime_{emotion}" for emotion in self.emotion_names]
-                    # 最もスコアが高い列をラベル化
-                    df_existing["Weime_Label"] = (
-                        df_existing[weime_columns].idxmax(axis=1).str.replace("Weime_", "")
+                    weime_columns = [f"weime_{emotion.lower()}" for emotion in self.emotion_names]
+                    df_existing["weime_label"] = (
+                        df_existing[weime_columns].idxmax(axis=1).str.replace("weime_", "")
                     )
 
-        # 最終的なデータフレームをreturn
+        # 全てのカラム名を小文字に統一（既に小文字に統一済みの場合は不要）
+        df_existing.columns = [col.lower() for col in df_existing.columns]
+
+        logging.info("感情分析が完了しました。データフレームを返します。")
         return df_existing
 
 

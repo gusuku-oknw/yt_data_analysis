@@ -9,9 +9,14 @@ from chat_emotions import EmotionAnalyzer
 from audio_utils import download_yt_sound, extract_vocals
 from chat_download import ChatScraper
 from yt_url_utils import YTURLUtils
+from sqlalchemy import text
+from sqlalchemy import inspect
+from sqlalchemy.types import String, Float  # 必要な型をインポート
+import logging
 
 # インスタンスの初期化
 yt_utils = YTURLUtils()
+import traceback
 
 
 # 動画IDテーブルを取得する関数
@@ -36,11 +41,35 @@ def fetch_table_from_db(video_id, db_handler):
         print(f"DB取得エラー: {e}")
         return None
 
+def add_missing_columns(engine, table_name, required_columns):
+    """
+    必要なカラムをデータベーステーブルに追加します。
+    """
+    inspector = inspect(engine)
+    # 既存カラム名を小文字に統一して取得
+    existing_columns = {col['name'].lower() for col in inspector.get_columns(table_name)}
+
+    for column_name, column_type in required_columns.items():
+        if column_name.lower() not in existing_columns:  # 小文字で比較
+            try:
+                sql_type = column_type.upper()
+                with engine.connect() as connection:
+                    connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"))
+                print(f"カラム '{column_name}' を追加しました。")
+            except Exception as e:
+                print(f"[ERROR] カラム追加時にエラーが発生しました: {e}")
+                print(traceback.format_exc())
+        else:
+            print(f"カラム '{column_name}' は既に存在しています。")
+
 
 if __name__ == "__main__":
     # 入力CSVファイルのパス
     csv_file = "../data/にじさんじ　切り抜き_20250102_202807.csv"
     db_url = "sqlite:///C:/Users/tmkjn/Documents/python/data_analysis/fetch_whisper/chat_data.db"
+
+    scraper = ChatScraper(db_url=db_url)
+    engine = scraper.db_handler.engine  # ChatScraperからエンジンを取得
 
     audio_dir = "../data/audio"
     os.makedirs(os.path.join(audio_dir, "source"), exist_ok=True)
@@ -172,15 +201,56 @@ if __name__ == "__main__":
                 print(f"動画ID {source_video_id} のデータが見つかりません。感情分析をスキップします。")
                 continue
 
+            required_columns = {
+                "sentiment_positive": "FLOAT",
+                "sentiment_neutral": "FLOAT",
+                "sentiment_negative": "FLOAT",
+                "sentiment_label": "TEXT",
+                "weime_joy": "FLOAT",
+                "weime_sadness": "FLOAT",
+                "weime_anticipation": "FLOAT",
+                "weime_surprise": "FLOAT",
+                "weime_anger": "FLOAT",
+                "weime_fear": "FLOAT",
+                "weime_disgust": "FLOAT",
+                "weime_trust": "FLOAT",
+                "weime_label": "TEXT",
+                "mlask_emotion": "TEXT",
+            }
+
+            add_missing_columns(scraper.db_handler.engine, source_video_id, required_columns)
+
             analysis_result = emotion_comparator.analysis_emotion(
                 df=source_table,  # 必要に応じて正しい形式に変換
                 analysis_methods=["sentiment", "weime", "mlask"]
             )
-            print(f"感情分析が完了しました: {analysis_result}")
+            print(f"感情分析が完了しました: \n{analysis_result.head()}")
 
-            # 感情分析結果をDBに保存
-            scraper.db_handler.save_emotion_analysis(source_video_id, analysis_result)
+            # データフレームのカラム名をデータベースのカラム名に揃える（既に小文字に統一済みの場合は不要）
+            # analysis_result.columns = [col.lower() for col in analysis_result.columns]
 
+            # データベースに存在するカラムを確認
+            inspector = inspect(scraper.db_handler.engine)
+            existing_columns = [col["name"] for col in inspector.get_columns(source_video_id)]
+            print(f"既存のカラム: {existing_columns}")
+            print(f"新しいカラム: {analysis_result.columns.tolist()}")
+            print(analysis_result.head(1))
+
+            # データフレームに感情ラベルが正しく設定されているか確認
+            if analysis_result["weime_label"].isnull().all():
+                logging.error("weime_label の分析結果がすべて None です。")
+            if analysis_result["mlask_emotion"].isnull().all():
+                logging.error("mlask_emotion の分析結果がすべて None です。")
+
+            # テーブルにデータを挿入
+            analysis_result.to_sql(
+                source_video_id,
+                con=scraper.db_handler.engine,
+                if_exists='replace',
+                index=False,
+                method='multi',
+                chunksize=1000  # 例として1000行ずつ挿入
+            )
             results[-1]["status"] = "成功"
             pd.DataFrame(results).to_csv(progress_file, index=False, encoding="utf-8-sig")
 
