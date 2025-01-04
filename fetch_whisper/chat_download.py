@@ -6,7 +6,10 @@ import pandas as pd
 from datetime import datetime
 from urllib.parse import urlparse, parse_qs
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy import MetaData, Table, Column, select, text, create_engine, inspect
+from sqlalchemy import Table, Column, Float, String, MetaData, create_engine, inspect, text
+from sqlalchemy.types import String, Float  # 必要な型をインポート
 from chat_downloader import ChatDownloader
 from openai import OpenAI
 from yt_url_utils import YTURLUtils
@@ -377,6 +380,91 @@ class DBHandler:
         inspector = inspect(self.engine)
         return table_name in inspector.get_table_names()
 
+    def add_column_with_default(self, engine, table_name, column_name, column_type, default_value=None):
+        """
+        テーブルにカラムを追加し、既存データにデフォルト値を設定します。
+        """
+        with engine.connect() as conn:
+            # カラム追加
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
+
+            # デフォルト値を設定
+            if default_value is not None:
+                conn.execute(f"UPDATE {table_name} SET {column_name} = ?", (default_value,))
+
+    def add_columns_with_backup(self, engine, table_name, new_columns):
+        """
+        安全な方法でテーブルにカラムを追加します。
+        - new_columns: { "column_name": "column_type" }
+        """
+        # テーブルのバックアップ
+        temp_table_name = f"{table_name}_backup"
+        with engine.connect() as conn:
+            # 既存データのバックアップ
+            conn.execute(f"CREATE TABLE {temp_table_name} AS SELECT * FROM {table_name}")
+
+            # 新しいテーブル作成
+            column_definitions = ", ".join([f"{col} {dtype}" for col, dtype in new_columns.items()])
+            conn.execute(f"""
+                CREATE TABLE {table_name}_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    {column_definitions},
+                    -- 必要な既存カラムをここに列挙
+                )
+            """)
+
+            # データを新しいテーブルにコピー
+            conn.execute(f"INSERT INTO {table_name}_new SELECT * FROM {temp_table_name}")
+
+            # 元のテーブルを削除して新しいテーブルにリネーム
+            conn.execute(f"DROP TABLE {table_name}")
+            conn.execute(f"ALTER TABLE {table_name}_new RENAME TO {table_name}")
+
+    def migrate_table_with_sqlalchemy(self, engine, table_name, new_columns):
+        """
+        SQLAlchemy を用いて新しいカラムを持つテーブルを作成し、データを移行します。
+
+        Parameters:
+        - engine: SQLAlchemy データベースエンジン
+        - table_name: 移行対象の既存テーブル名
+        - new_columns: 追加するカラムの辞書 {col_name: col_type}
+        """
+        # MetaData オブジェクトを初期化
+        metadata = MetaData()
+
+        # 既存テーブルを取得
+        old_table = Table(table_name, metadata, autoload_with=engine)
+
+        # 既存カラムを保持し、新しいカラムを追加
+        all_columns = [
+            Column(col.name, col.type, primary_key=col.primary_key, nullable=col.nullable, default=col.default)
+            for col in old_table.columns
+        ]
+        for col_name, col_type in new_columns.items():
+            all_columns.append(Column(col_name, col_type))
+
+        # 新しいテーブルを作成
+        new_table_name = f"{table_name}_new"
+        new_table = Table(new_table_name, MetaData(), *all_columns)
+        new_table.create(bind=engine)
+
+        # データを新しいテーブルにコピー
+        with engine.connect() as conn:
+            # SELECT クエリを生成
+            select_query = select([col for col in old_table.columns])
+            rows = conn.execute(select_query).fetchall()
+
+            # データを挿入
+            if rows:
+                insert_query = new_table.insert()
+                conn.execute(insert_query, [dict(row) for row in rows])
+
+            # テーブルのリネームと元のテーブルの削除
+            conn.execute(f"DROP TABLE {table_name}")
+            conn.execute(f"ALTER TABLE {new_table_name} RENAME TO {table_name}")
+
+        print(f"テーブル '{table_name}' を移行しました。")
+
     # -------------------------------------------------------------------------
     # レコード単位で Insert or Update を行うメソッド
     # -------------------------------------------------------------------------
@@ -535,25 +623,98 @@ class DBHandler:
     # -------------------------------------------------------------------------
     def save_emotion_analysis(self, video_id, analysis_results):
         """
-        analysis_results は以下の形式を想定:
-        {
-            "sentiment": float,
-            "weime": float,
-            "mlask": float
-        }
+        感情分析結果を Emotion_analysis テーブルと動画IDテーブルに保存します。
         """
         now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+        # データを適切な型に変換
+        def safe_float(value):
+            try:
+                return float(value) if value is not None else None
+            except (ValueError, TypeError):
+                return None
+
+        # 挿入データの整形
         data = {
-            "video_id": video_id,
-            "analysis_method": "default",  # 必要に応じて変更
-            "sentiment": analysis_results.get("sentiment"),
-            "weime": analysis_results.get("weime"),
-            "mlask": analysis_results.get("mlask"),
-            "created_at": now_str
+            "video_id": video_id,  # video_id は文字列型
+            "created_at": now_str,
+            "sentiment_positive": safe_float(analysis_results.get("Sentiment_Positive")),
+            "sentiment_neutral": safe_float(analysis_results.get("Sentiment_Neutral")),
+            "sentiment_negative": safe_float(analysis_results.get("Sentiment_Negative")),
+            "sentiment_label": analysis_results.get("Sentiment_Label"),
+            "weime_joy": safe_float(analysis_results.get("Weime_Joy")),
+            "weime_sadness": safe_float(analysis_results.get("Weime_Sadness")),
+            "weime_anticipation": safe_float(analysis_results.get("Weime_Anticipation")),
+            "weime_surprise": safe_float(analysis_results.get("Weime_Surprise")),
+            "weime_anger": safe_float(analysis_results.get("Weime_Anger")),
+            "weime_fear": safe_float(analysis_results.get("Weime_Fear")),
+            "weime_disgust": safe_float(analysis_results.get("Weime_Disgust")),
+            "weime_trust": safe_float(analysis_results.get("Weime_Trust")),
+            "weime_label": analysis_results.get("Weime_Label"),
+            "mlask_emotion": analysis_results.get("MLAsk_Emotion"),
         }
-        df = pd.DataFrame([data])
-        self.save_to_sql(df, "Emotion_analysis", primary_keys=["video_id", "analysis_method"])
-        print(f"[Emotion_analysis] 保存しました: {video_id}")
+
+        # データベースエンジン
+        engine = self.engine
+        metadata = MetaData()
+
+        # 必要なカラムを定義
+        required_columns = {
+            "video_id": String,  # video_id は文字列型
+            "sentiment_positive": Float,
+            "sentiment_neutral": Float,
+            "sentiment_negative": Float,
+            "sentiment_label": String,
+            "weime_joy": Float,
+            "weime_sadness": Float,
+            "weime_anticipation": Float,
+            "weime_surprise": Float,
+            "weime_anger": Float,
+            "weime_fear": Float,
+            "weime_disgust": Float,
+            "weime_trust": Float,
+            "weime_label": String,
+            "mlask_emotion": String,
+            "created_at": String,
+        }
+
+        # 動画IDテーブルの存在とカラムの確認
+        segment_table_name = video_id
+        with engine.connect() as conn:
+            inspector = inspect(engine)
+            if segment_table_name in inspector.get_table_names():
+                # テーブルが存在する場合、カラムの存在を確認
+                existing_columns = [col['name'] for col in inspector.get_columns(segment_table_name)]
+                missing_columns = {name: dtype for name, dtype in required_columns.items() if
+                                   name not in existing_columns}
+
+                if missing_columns:
+                    print(f"テーブル '{segment_table_name}' に不足しているカラムがあります。追加します。")
+                    for col_name, col_type in missing_columns.items():
+                        alter_query = text(
+                            f"ALTER TABLE {segment_table_name} ADD COLUMN {col_name} {col_type.__visit_name__.upper()}"
+                        )
+                        conn.execute(alter_query)
+                        print(f"カラム '{col_name}' を追加しました。")
+            else:
+                # テーブルが存在しない場合、新規作成
+                print(f"テーブル '{segment_table_name}' が存在しません。新規作成します。")
+                video_table = Table(
+                    segment_table_name,
+                    metadata,
+                    *[Column(name, dtype) for name, dtype in required_columns.items()]
+                )
+                metadata.create_all(engine)
+                print(f"テーブル '{segment_table_name}' を作成しました。")
+
+        # 動画IDテーブルにデータを追加
+        video_table = Table(segment_table_name, metadata, autoload_with=engine)
+        with engine.connect() as conn:
+            # カラム型を確認
+            print(f"[DEBUG] テーブル '{segment_table_name}' のカラム情報: {inspector.get_columns(segment_table_name)}")
+            insert_stmt = insert(video_table).values(data)
+            conn.execute(insert_stmt)
+            print(f"[{segment_table_name}] にデータを追加しました。")
 
     # -------------------------------------------------------------------------
     # Segment_comparisons テーブルへの保存

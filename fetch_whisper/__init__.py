@@ -108,77 +108,70 @@ if __name__ == "__main__":
         source_video_id = yt_utils.get_video_id_from_url(source)
         clip_video_id = yt_utils.get_video_id_from_url(clip)
 
-        # 元動画テーブルを取得
-        source_table = fetch_table_from_db(source_video_id, scraper.db_handler)
+        # セグメント比較テーブル名を生成
+        table_name = f"{clip_video_id}->{source_video_id}"
 
-        if source_table is None:
-            print(f"元動画のテーブルが取得できませんでした: {source_video_id}")
-            results.append({"index": i, "source_url": source, "clipping_url": clip, "file_path": None,
-                            "status": "元動画テーブル取得失敗"})
-            pd.DataFrame(results).to_csv(progress_file, index=False, encoding="utf-8-sig")
-            continue
+        # セグメント比較テーブルが既に存在するか確認
+        existing_tables = pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", scraper.db_handler.engine)[
+            'name'].values
+        segment_comparison_skipped = table_name in existing_tables
+
+        if segment_comparison_skipped:
+            print(f"セグメント比較テーブル '{table_name}' は既に存在するためセグメント比較をスキップします。")
+        else:
+            print(f"セグメント比較を実行します: {table_name}")
 
         try:
             results.append(
                 {"index": i, "source_url": source, "clipping_url": clip, "file_path": None, "status": "処理中"})
             pd.DataFrame(results).to_csv(progress_file, index=False, encoding="utf-8-sig")
 
-            # ステップ1: 音声ダウンロード
-            print("元配信音声をダウンロード中...")
-            source_audio = download_yt_sound(source, output_dir=os.path.join(audio_dir, "source"))
-            print("切り抜き音声をダウンロード中...")
-            clipping_audio = download_yt_sound(clip, output_dir=os.path.join(audio_dir, "clipping"))
+            # セグメント比較をスキップしない場合に実行
+            if not segment_comparison_skipped:
+                # 音声ダウンロード（必要な場合のみ）
+                print("元配信音声をダウンロード中...")
+                source_audio = download_yt_sound(source, output_dir=os.path.join(audio_dir, "source"))
+                print("切り抜き音声をダウンロード中...")
+                clipping_audio = download_yt_sound(clip, output_dir=os.path.join(audio_dir, "clipping"))
+                clip_path = extract_vocals(clipping_audio)
 
-            # 音声処理
-            clip_path = extract_vocals(clipping_audio)
+                source_segments = comparator.transcribe_with_vad(
+                    audio_file=source_audio,
+                    threshold=0.35,
+                    language="ja",
+                    beam_size=5
+                )
+                clipping_segments = comparator.transcribe_with_vad(
+                    audio_file=clip_path,
+                    threshold=0.35,
+                    language="ja",
+                    beam_size=5
+                )
 
-            # 元動画と切り抜き動画のセグメント化と文字起こし
-            source_segments = comparator.transcribe_with_vad(
-                audio_file=source_audio,
-                threshold=0.35,
-                language="ja",
-                beam_size=5
-            )
-            clipping_segments = comparator.transcribe_with_vad(
-                audio_file=clip_path,
-                threshold=0.35,
-                language="ja",
-                beam_size=5
-            )
+                # セグメント比較結果を取得
+                compare_result = comparator.compare_segments(
+                    clipping_segments,
+                    source_segments,
+                    initial_threshold=0.8,
+                    fast_method="sequence",
+                    slow_method="tfidf"
+                )
 
-            # セグメント比較
-            compare_result = comparator.compare_segments(
-                clipping_segments,
-                source_segments,
-                initial_threshold=0.8,
-                fast_method="sequence",
-                slow_method="tfidf"
-            )
+                # セグメント比較結果を新しいテーブルとして保存
+                compare_result_df = pd.DataFrame(compare_result)
+                compare_result_df.to_sql(
+                    table_name,
+                    con=scraper.db_handler.engine,
+                    if_exists='replace',
+                    index=False
+                )
+                print(f"セグメント比較結果をテーブル '{table_name}' として保存しました。")
 
-            # セグメント比較結果を新しいテーブルとして保存
-            table_name = f"{clip_video_id}->{source_video_id}"
-            compare_result_df = pd.DataFrame(compare_result)
-            compare_result_df.to_sql(
-                table_name,
-                con=scraper.db_handler.engine,
-                if_exists='replace',
-                index=False
-            )
-            print(f"セグメント比較結果をテーブル '{table_name}' として保存しました。")
+            source_table = fetch_table_from_db(source_video_id, scraper.db_handler)
+            if source_table is None or source_table.empty:
+                print(f"動画ID {source_video_id} のデータが見つかりません。感情分析をスキップします。")
+                continue
 
-            # セグメント比較テーブルの確認
-            if table_name in \
-                    pd.read_sql("SELECT name FROM sqlite_master WHERE type='table'", scraper.db_handler.engine)[
-                        'name'].values:
-                print(f"セグメント比較テーブル '{table_name}' が正しく保存されました。")
-            else:
-                print(f"セグメント比較テーブル '{table_name}' が保存されていません！")
-
-            # デバッグ用: 元動画データの確認
-            print(f"元動画データ: {source_table.head()}")
-
-            # 元動画データを用いて必要な処理を実行
-            # 感情分析 (クリップ動画は対象外)
             analysis_result = emotion_comparator.analysis_emotion(
                 df=source_table,  # 必要に応じて正しい形式に変換
                 analysis_methods=["sentiment", "weime", "mlask"]
@@ -187,16 +180,6 @@ if __name__ == "__main__":
 
             # 感情分析結果をDBに保存
             scraper.db_handler.save_emotion_analysis(source_video_id, analysis_result)
-
-            # 感情分析結果の確認
-            saved_emotions = pd.read_sql(
-                f"SELECT * FROM Emotion_analysis WHERE video_id='{source_video_id}'",
-                scraper.db_handler.engine
-            )
-            if not saved_emotions.empty:
-                print(f"感情分析結果が正しく保存されました: {saved_emotions}")
-            else:
-                print(f"感情分析結果が保存されていません！")
 
             results[-1]["status"] = "成功"
             pd.DataFrame(results).to_csv(progress_file, index=False, encoding="utf-8-sig")
@@ -209,5 +192,6 @@ if __name__ == "__main__":
     # 全処理完了
     print("\n全ての動画処理が完了しました。")
     results_df = pd.DataFrame(results)
-    results_df.to_csv(f"processing_{datetime.now().strftime('%Y%m%d_%H%M%S')}_results.csv", index=False, encoding="utf-8-sig")
+    results_df.to_csv(f"processing_{datetime.now().strftime('%Y%m%d_%H%M%S')}_results.csv", index=False,
+                      encoding="utf-8-sig")
     print("処理結果を保存しました。")
