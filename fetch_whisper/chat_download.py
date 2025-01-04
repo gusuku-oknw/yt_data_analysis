@@ -17,18 +17,12 @@ from openai import OpenAI
 class YTURLUtils:
     @staticmethod
     def split_urls(row, allow_channels=False):
-        """
-        複数URLを分割してリストとして返す。チャンネルURLは除外する/しないを指定可能。
-        """
         url_pattern = re.compile(r'https?://[^\s,]+')
         urls = url_pattern.findall(row)
         return YTURLUtils.filter_and_correct_urls(urls, allow_channels=allow_channels)
 
     @staticmethod
     def filter_and_correct_urls(url_list, allow_playlists=False, allow_channels=False, exclude_twitch=True):
-        """
-        URLリストをフィルタリングし、不完全なURLを補正して有効なYouTubeおよびTwitch URLのみを返す。
-        """
         valid_urls = []
         youtube_url_pattern = re.compile(
             r'(https://)?(www\.)?(youtube\.com|youtu\.be)/(watch\?v=|live/|embed/|[a-zA-Z0-9_-]+)'
@@ -61,15 +55,11 @@ class YTURLUtils:
 
     @staticmethod
     def get_video_id_from_url(url):
-        """
-        URLからYouTube動画IDを抽出する。
-        """
         parsed_url = urlparse(url)
         if "youtube.com" in parsed_url.netloc:
             query_params = parse_qs(parsed_url.query)
             if "v" in query_params:
                 return query_params["v"][0]
-            # /live/ 形式
             if "/live/" in parsed_url.path:
                 return parsed_url.path.split("/")[-1]
         if "youtu.be" in parsed_url.netloc:
@@ -79,9 +69,6 @@ class YTURLUtils:
 
     @staticmethod
     def remove_query_params(url):
-        """
-        URLから不要なクエリパラメータを削除する。ただし "v=" は保持。
-        """
         parsed_url = urlparse(url)
         query_params = parse_qs(parsed_url.query)
         if "v" in query_params:
@@ -100,9 +87,6 @@ class ImageText:
         self.client = OpenAI(api_key=os.environ['OpenAIKey'])
 
     def image2text(self, image_url):
-        """
-        画像URLから文字＆感情を抽出する。
-        """
         if not image_url.strip():
             return "None"
 
@@ -141,7 +125,6 @@ class ImageText:
             extracted = response.choices[0].message.content.strip()
             return extracted
         except Exception as e:
-            # エラー時は内容を表示し、"エラーが発生しました" 的に返す
             print(f"[image2text Error] {e}")
             return "None: Unknown"
 
@@ -151,16 +134,10 @@ class ImageText:
 # =============================================================================
 class ChatDataProcessor:
     def __init__(self, db_handler):
-        """
-        db_handler: DBHandler のインスタンス
-        """
         self.db_handler = db_handler
         self.image_text_extractor = ImageText()
 
     def download_chat_data(self, url):
-        """
-        YouTube URLからチャットデータを取得し、DataFrameで返す。
-        """
         messages_data = []
         try:
             chat = ChatDownloader().get_chat(url)
@@ -224,9 +201,6 @@ class ChatDataProcessor:
         return df
 
     def message_stamp2text(self, df, stamp_mapping, channel_id):
-        """
-        チャットのメッセージを解析し、スタンプコード・スタンプ説明などを抽出する。
-        """
         stamps_data_list = []
 
         def process_row(row):
@@ -255,7 +229,7 @@ class ChatDataProcessor:
             for stamp in stamps:
                 stamp_description = stamp_mapping.get(stamp, f"Unknown Stamp: {stamp}")
 
-                # 1) 同じ行内 or stamp_mapping で既に判明していれば抑制（従来処理）
+                # 1) 同じ行内 or stamp_mapping で既に判明していれば抑制
                 if stamp in stamps_in_this_row:
                     reuse_text, reuse_emotion = stamps_in_this_row[stamp]
                     stamp_texts.append(f"{stamp_description}: {reuse_text}")
@@ -274,7 +248,6 @@ class ChatDataProcessor:
                     stamp_texts.append(f"{stamp_description}: {known_text}")
                     stamp_emotions.append(known_emotion)
 
-                    # Stamp_data に追加
                     stamps_data_list.append({
                         "channel_id": channel_id,
                         "stamp_code": stamp,
@@ -287,20 +260,14 @@ class ChatDataProcessor:
                 # 2) すでに (channel_id, stamp_code) が 5件以上あるならスキップ
                 stamp_count_in_db = self.db_handler.count_stamp_occurrences(channel_id, stamp)
                 if stamp_count_in_db >= 5:
-                    # API 呼び出しをせず、固定値で処理
                     stamp_text = "Skipped (Limit Reached)"
                     stamp_emotion = "Unknown"
                     stamp_texts.append(f"{stamp_description}: {stamp_text}")
                     stamp_emotions.append(stamp_emotion)
                     stamps_in_this_row[stamp] = (stamp_text, stamp_emotion)
-
-                    # DB にも追加しない → 「既に 5 つあるなら、これ以上詳細を増やさない」方針なら
-                    # 何もしない or あえてレコード挿入したくない場合は追加しない
-                    # ただし「何が起きたか履歴で見たい場合」には挿入してもよい
-                    # stamps_data_list.append(...)
                     continue
 
-                # 3) ここまで来たら新規に API  呼び出し
+                # 3) 新規に API 呼び出し
                 if row['Stamp Image URL'] != "No stamp image":
                     extracted_text = self.image_text_extractor.image2text(row['Stamp Image URL'])
                     if ": " in extracted_text:
@@ -308,7 +275,6 @@ class ChatDataProcessor:
                     else:
                         stamp_text, stamp_emotion = extracted_text, "Unknown"
 
-                    # stamp_mapping を更新
                     if stamp_description.startswith("Unknown Stamp:"):
                         stamp_mapping[stamp] = f"{stamp_text}: {stamp_emotion}"
 
@@ -324,7 +290,6 @@ class ChatDataProcessor:
                         "created_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     })
                 else:
-                    # 画像なし
                     stamp_text = "No image available"
                     stamp_emotion = "Unknown"
                     stamp_texts.append(f"{stamp_description}: {stamp_text}")
@@ -343,7 +308,7 @@ class ChatDataProcessor:
             return (
                 original_message,
                 processed_message,
-                json.dumps(stamps, ensure_ascii=False),  # JSON形式で保存
+                json.dumps(stamps, ensure_ascii=False),
                 "; ".join(stamp_texts),
                 "; ".join(stamp_emotions),
             )
@@ -363,13 +328,41 @@ class ChatDataProcessor:
 # 4) データベースへの保存（Channel・スタンプ・チャット）を扱うクラス
 # =============================================================================
 class DBHandler:
-    def __init__(self, db_url="sqlite:///chat_data.db"):
+    def __init__(self, db_url=None):
+        # -- 絶対パスで指定する例 ------------------------------------------------
+        base_dir = os.path.dirname(os.path.abspath(__file__))  # スクリプトファイルのあるパス
+        if db_url is None:
+            db_path = os.path.join(base_dir, "chat_data.db")
+            db_url = f"sqlite:///{db_path}"
         self.db_url = db_url
-        self.engine = create_engine(db_url)
+        # echo=True で実際のSQLをログ出力すると原因追跡がしやすくなる
+        self.engine = create_engine(self.db_url, echo=False)
 
-        self.create_stamp_data_table(self.engine)
+        # テーブルの作成
+        self.create_channel_id_table()
+        self.create_stamp_data_table()
+        self.create_channel_videos_table()
 
-    def create_stamp_data_table(self, engine):
+    def create_channel_id_table(self):
+        """
+        Channel_id テーブルが無い場合に作成
+        """
+        create_table_query = text("""
+        CREATE TABLE IF NOT EXISTS Channel_id (
+            channel_id TEXT PRIMARY KEY,
+            channel_title TEXT,
+            channel_url TEXT,
+            subscriber_count INTEGER,
+            channel_description TEXT,
+            channel_type TEXT,
+            created_at TEXT
+        )
+        """)
+        with self.engine.begin() as conn:
+            conn.execute(create_table_query)
+        print("Channel_id テーブルを作成しました（または既に存在します）。")
+
+    def create_stamp_data_table(self):
         create_table_query = text("""
         CREATE TABLE IF NOT EXISTS Stamp_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -380,56 +373,116 @@ class DBHandler:
             created_at TEXT
         )
         """)
-        with engine.connect() as conn:
+        with self.engine.begin() as conn:
             conn.execute(create_table_query)
         print("Stamp_data テーブルを作成しました（または既に存在します）。")
 
-    def count_stamp_occurrences(self, channel_id, stamp_code):
-        """
-        Stamp_data テーブルで (channel_id, stamp_code) のレコードが何件あるかを返す
-        """
-        from sqlalchemy import text
+    def create_channel_videos_table(self):
+        create_table_query = text("""
+        CREATE TABLE IF NOT EXISTS Channel_videos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT NOT NULL,
+            video_id TEXT NOT NULL,
+            video_url TEXT NOT NULL,
+            video_type TEXT NOT NULL,
+            created_at TEXT
+        )
+        """)
+        with self.engine.begin() as conn:
+            conn.execute(create_table_query)
+        print("Channel_videos テーブルを作成しました（または既に存在します）。")
 
+    def count_stamp_occurrences(self, channel_id, stamp_code):
         query = text("""
-            SELECT COUNT(*) 
-            FROM Stamp_data 
+            SELECT COUNT(*)
+            FROM Stamp_data
             WHERE channel_id = :ch_id AND stamp_code = :st_code
         """)
-
-        with self.engine.connect() as conn:
+        with self.engine.begin() as conn:
             result = conn.execute(query, {"ch_id": channel_id, "st_code": stamp_code}).fetchone()
-
         if result is not None:
-            count = result[0]  # 最初の要素がカウント値
-            return count
+            return result[0]
         return 0
 
     def table_exists(self, table_name):
         inspector = inspect(self.engine)
         return table_name in inspector.get_table_names()
 
-    def save_to_sql(self, dataframe, table_name, if_exists="append"):
-        """
-        汎用: DataFrame → SQL
-        """
-        dataframe.to_sql(table_name, con=self.engine, if_exists=if_exists, index=False)
-        print(f"[SAVE] {table_name} に {len(dataframe)} 件のレコードを追加")
+    # -------------------------------------------------------------------------
+    # レコード単位で Insert or Update を行うメソッド
+    # -------------------------------------------------------------------------
+    def insert_or_update_rows(self, df: pd.DataFrame, table_name: str, primary_keys: list):
+        if df is None or df.empty:
+            return
+
+        columns = df.columns.tolist()
+        # UPDATE用のSET句: primary_keys 以外の列を更新対象
+        set_clause = ", ".join([f"{col} = :{col}" for col in columns if col not in primary_keys])
+        where_clause = " AND ".join([f"{pk} = :{pk}" for pk in primary_keys])
+
+        insert_cols_str = ", ".join(columns)
+        insert_vals_str = ", ".join([f":{col}" for col in columns])
+
+        with self.engine.begin() as conn:  # begin() により自動コミット
+            for row in df.to_dict(orient="records"):
+                # まず既存レコードがあるかチェック
+                select_query = text(f"SELECT COUNT(*) FROM {table_name} WHERE {where_clause}")
+                select_params = {pk: row[pk] for pk in primary_keys}
+                record_exists = conn.execute(select_query, select_params).fetchone()[0] > 0
+
+                if record_exists:
+                    if set_clause.strip():
+                        update_query = text(f"""
+                            UPDATE {table_name}
+                            SET {set_clause}
+                            WHERE {where_clause}
+                        """)
+                        conn.execute(update_query, row)
+                else:
+                    insert_query = text(f"""
+                        INSERT INTO {table_name} ({insert_cols_str})
+                        VALUES ({insert_vals_str})
+                    """)
+                    conn.execute(insert_query, row)
+
+    def save_to_sql(self, dataframe, table_name, primary_keys=None):
+        if dataframe is None or dataframe.empty:
+            print(f"[SAVE] {table_name} に保存するデータがありません。")
+            return
+
+        # primary_keys が無い場合はそのまま append（従来動作）
+        if not primary_keys:
+            # replace でなく append に注意
+            dataframe.to_sql(table_name, con=self.engine, if_exists="append", index=False)
+            print(f"[SAVE - append only] {table_name} に {len(dataframe)} 件のレコードを追加")
+            return
+
+        # テーブル未作成なら新規作成
+        if not self.table_exists(table_name):
+            with self.engine.begin() as conn:
+                dataframe.to_sql(table_name, con=conn, if_exists="replace", index=False)
+            print(f"[SAVE - created new table] {table_name} に {len(dataframe)} 件のレコードを新規挿入")
+            return
+
+        # テーブルが既に存在 → insert or update
+        self.insert_or_update_rows(dataframe, table_name, primary_keys=primary_keys)
+        print(f"[SAVE] {table_name} に {len(dataframe)} 件のレコードをInsert/Updateしました。")
 
     def load_channel_record(self, channel_id):
-        """
-        channel_id をキーにして既存のレコードを DataFrame で取得
-        見つからなければ空の DataFrame を返す
-        """
         query = f"SELECT * FROM Channel_id WHERE channel_id = '{channel_id}'"
-        try:
-            df = pd.read_sql(query, self.engine)
-            return df
-        except:
-            return pd.DataFrame()
+        with self.engine.begin() as conn:
+            try:
+                df = pd.read_sql(query, conn)
+                return df
+            except:
+                return pd.DataFrame()
 
-    def upsert_channel_data(self, channel_data: dict, is_clipping=False, snippet_video_url=None, video_id=None):
+    # -------------------------------------------------------------------------
+    # Channel_id テーブルへのアップサート
+    # -------------------------------------------------------------------------
+    def upsert_channel_data(self, channel_data: dict):
         """
-        channel_data は以下のキーを含む:
+        channel_data は以下のキーを含む想定:
           {
             'channel_id': ...,
             'channel_title': ...,
@@ -437,83 +490,86 @@ class DBHandler:
             'subscriber_count': ...,
             'channel_description': ...,
             'channel_type': 'Source' or 'clipping',
-            'created_at': ...,
+            'created_at': ...
           }
-        ここに 'video_ids' (JSON) や 'clipping_urls' (JSON) を追加管理する。
-        すでにDBにレコードがある場合は、JSONカラムを取り出して追加する形。
         """
         channel_id = channel_data['channel_id']
         existing_df = self.load_channel_record(channel_id)
 
-        # DBに該当レコードがない → 新規レコード作成
         if existing_df.empty:
-            channel_data['video_ids'] = "[]"
-            channel_data['clipping_urls'] = "[]"
-            if is_clipping and snippet_video_url:
-                # clipping
-                channel_data['channel_type'] = 'clipping'
-                channel_data['clipping_urls'] = json.dumps([snippet_video_url], ensure_ascii=False)
-            elif video_id:
-                # source
-                channel_data['channel_type'] = 'Source'
-                channel_data['video_ids'] = json.dumps([video_id], ensure_ascii=False)
+            # 新規 INSERT
             df_new = pd.DataFrame([channel_data])
-            self.save_to_sql(df_new, "Channel_id", if_exists="append")
+            self.save_to_sql(df_new, "Channel_id", primary_keys=["channel_id"])
         else:
-            # 既存レコード → JSON を読み込んで追加し再保存 (UPDATE)
+            # UPDATE
             existing_record = existing_df.iloc[0].to_dict()
-
-            video_ids_list = json.loads(existing_record.get('video_ids', '[]') or '[]')
-            clipping_list = json.loads(existing_record.get('clipping_urls', '[]') or '[]')
-
-            existing_type = existing_record.get('channel_type', 'Source')
-
-            # クリッピングの情報を追記
-            if is_clipping and snippet_video_url:
-                existing_type = 'clipping'
-                clipping_list.append(snippet_video_url)
-                clipping_list = list(set(clipping_list))  # 重複排除
-            elif video_id:  # ソース動画
-                video_ids_list.append(video_id)
-                video_ids_list = list(set(video_ids_list))
-
             updated_data = {
-                'channel_id': existing_record['channel_id'],
-                'channel_title': channel_data.get('channel_title', existing_record['channel_title']),
-                'channel_url': channel_data.get('channel_url', existing_record['channel_url']),
-                'subscriber_count': channel_data.get('subscriber_count', existing_record['subscriber_count']),
-                'channel_description': channel_data.get('channel_description', existing_record['channel_description']),
-                'channel_type': existing_type,
-                'created_at': existing_record['created_at'],  # 初回記録日時を維持
-                'video_ids': json.dumps(video_ids_list, ensure_ascii=False),
-                'clipping_urls': json.dumps(clipping_list, ensure_ascii=False),
+                'channel_id': channel_id,
+                'channel_title': channel_data.get('channel_title', existing_record.get('channel_title')),
+                'channel_url': channel_data.get('channel_url', existing_record.get('channel_url')),
+                'subscriber_count': channel_data.get('subscriber_count', existing_record.get('subscriber_count')),
+                'channel_description': channel_data.get('channel_description', existing_record.get('channel_description')),
+                'channel_type': channel_data.get('channel_type', existing_record.get('channel_type')),
+                'created_at': existing_record.get('created_at', channel_data.get('created_at')),
             }
-            # 既存レコード削除して入れ直す
-            delete_query = text(f"DELETE FROM Channel_id WHERE channel_id = '{channel_id}'")
-            with self.engine.connect() as conn:
-                conn.execute(delete_query)
-
             df_upd = pd.DataFrame([updated_data])
-            self.save_to_sql(df_upd, "Channel_id", if_exists="append")
+            self.save_to_sql(df_upd, "Channel_id", primary_keys=["channel_id"])
+
+    # -------------------------------------------------------------------------
+    # 新設: Channel_videos テーブル への動画情報アップサート
+    # -------------------------------------------------------------------------
+    def upsert_channel_videos(self, channel_id, video_id, video_url, video_type):
+        """
+        Channel_videos テーブルに (channel_id, video_id, video_url, video_type) を登録
+        """
+        # 既にあるかどうか確認
+        select_query = text("""
+            SELECT COUNT(*) FROM Channel_videos
+            WHERE channel_id = :ch_id AND video_id = :v_id
+        """)
+        with self.engine.begin() as conn:
+            result = conn.execute(select_query, {"ch_id": channel_id, "v_id": video_id}).fetchone()
+            exists = (result[0] > 0)
+
+        if exists:
+            print(f"[Channel_videos] 既に登録済み: {channel_id} - {video_id}")
+            return
+
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        insert_query = text("""
+            INSERT INTO Channel_videos (channel_id, video_id, video_url, video_type, created_at)
+            VALUES (:ch_id, :v_id, :v_url, :v_type, :created_at)
+        """)
+        with self.engine.begin() as conn:
+            conn.execute(insert_query, {
+                "ch_id": channel_id,
+                "v_id": video_id,
+                "v_url": video_url,
+                "v_type": video_type,
+                "created_at": now_str
+            })
+        print(f"[Channel_videos] 新規登録: {channel_id} - {video_id}")
 
     def save_stamps_to_sql(self, stamps_data_list):
-        """
-        スタンプ情報を "Stamp_data" テーブルに保存する
-        """
         if not stamps_data_list:
             return
         df_stamps = pd.DataFrame(stamps_data_list)
-        self.save_to_sql(df_stamps, table_name="Stamp_data", if_exists="append")
+        self.save_to_sql(
+            df_stamps,
+            table_name="Stamp_data",
+            primary_keys=["channel_id", "stamp_code", "stamp_text", "stamp_emotion", "created_at"]
+        )
 
 
 # =============================================================================
 # 5) メインの処理: CSV 読み込み → チャット/チャンネル/スタンプ保存
 # =============================================================================
 class ChatScraper:
-    def __init__(self, db_url="sqlite:///chat_data.db"):
+    def __init__(self, db_url=None):
         self.db_handler = DBHandler(db_url=db_url)
         self.chat_processor = ChatDataProcessor(db_handler=self.db_handler)
 
+        # ダミー: 実際には search_yt モジュールなどを import
         from search_yt import search_yt
         self.search_data = search_yt()
 
@@ -522,16 +578,8 @@ class ChatScraper:
                            url_column="Original videoURL",
                            video_url_column="Video URL",
                            delete_multiple=False):
-        """
-        CSV のオリジナルURLからチャットを取得し、DBに保存する。
-          - 動画チャット: テーブル名は "video_id" (YouTubeのID)
-          - チャンネル情報: テーブル名 "Channel_id"
-          - スタンプ情報: テーブル名 "Stamp_data"
-          - "Video URL" は切り抜きチャンネルとして登録 ( channel_type='clipping' )
-        """
         try:
             df = pd.read_csv(csv_file, encoding="utf-8-sig")
-            # カラム名の動的選択
             if url_column not in df.columns and "Original videoURL" in df.columns:
                 url_column = "Original videoURL"
             if url_column not in df.columns or video_url_column not in df.columns:
@@ -549,8 +597,8 @@ class ChatScraper:
         # すべてのURLを集約
         all_urls = []
         for _, row in urls.iterrows():
-            snippet_url = row[video_url_column]      # 切り抜き
-            original_url = row[url_column]           # 本家配信
+            snippet_url = row[video_url_column]
+            original_url = row[url_column]
             split_url_list = YTURLUtils.split_urls(original_url)
             if delete_multiple and len(split_url_list) > 1:
                 continue
@@ -577,21 +625,17 @@ class ChatScraper:
             snippet_url = item["snippet_url"]
             original_url = item["original_url"]
 
-            # 切り抜き動画IDを取得
             snippet_url_clean = YTURLUtils.remove_query_params(snippet_url)
             snippet_video_id = YTURLUtils.get_video_id_from_url(snippet_url_clean)
 
-            # オリジナル動画ID
             original_url_clean = YTURLUtils.remove_query_params(original_url)
             original_video_id = YTURLUtils.get_video_id_from_url(original_url_clean)
 
-            # 切り抜きチャンネル
             snippet_info = self.search_data.get_video_details(snippet_video_id)
             snippet_channel_id = None
             if snippet_info:
                 snippet_channel_id = snippet_info.get('channel_id', '')
 
-            # オリジナル配信チャンネル
             original_info = self.search_data.get_video_details(original_video_id)
             channel_id_source = None
             if original_info:
@@ -599,7 +643,7 @@ class ChatScraper:
 
             try:
                 # ------------------------------------------------------
-                # [A] 切り抜きチャンネルを Channel_id に upsert
+                # [A] 切り抜きチャンネル
                 # ------------------------------------------------------
                 if snippet_channel_id:
                     snippet_channel_details = self.search_data.get_channel_details(snippet_channel_id)
@@ -610,18 +654,19 @@ class ChatScraper:
                             'channel_url': snippet_channel_details['channel_url'],
                             'subscriber_count': snippet_channel_details['subscriber_count'],
                             'channel_description': snippet_channel_details['description'],
-                            'channel_type': 'clipping',  # クリッピング
+                            'channel_type': 'clipping',
                             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         }
-                        # snippet_url を clipping_urls に追加
-                        self.db_handler.upsert_channel_data(
-                            snippet_channel_data,
-                            is_clipping=True,
-                            snippet_video_url=snippet_url
+                        self.db_handler.upsert_channel_data(snippet_channel_data)
+                        self.db_handler.upsert_channel_videos(
+                            channel_id=snippet_channel_details['channel_id'],
+                            video_id=snippet_video_id,
+                            video_url=snippet_url,
+                            video_type='clipping'
                         )
 
                 # ------------------------------------------------------
-                # [B] オリジナル配信チャンネルを Channel_id に upsert
+                # [B] オリジナル配信チャンネル
                 # ------------------------------------------------------
                 if channel_id_source:
                     source_channel_details = self.search_data.get_channel_details(channel_id_source)
@@ -635,16 +680,18 @@ class ChatScraper:
                             'channel_type': 'Source',
                             'created_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         }
-                        self.db_handler.upsert_channel_data(
-                            source_channel_data,
-                            is_clipping=False,
-                            video_id=original_video_id
+                        self.db_handler.upsert_channel_data(source_channel_data)
+                        self.db_handler.upsert_channel_videos(
+                            channel_id=source_channel_details['channel_id'],
+                            video_id=original_video_id,
+                            video_url=original_url,
+                            video_type='Source'
                         )
                 else:
                     channel_id_source = "unknown_channel"
 
                 # ------------------------------------------------------
-                # [C] チャットテーブル (オリジナル動画ID) の存在チェック
+                # [C] すでにチャットテーブルが存在するかチェック
                 # ------------------------------------------------------
                 if self.db_handler.table_exists(original_video_id):
                     print(f"既存テーブルが見つかりました。スキップします: {original_video_id}")
@@ -663,7 +710,6 @@ class ChatScraper:
                 # ------------------------------------------------------
                 df_chat = self.chat_processor.download_chat_data(original_url)
                 if df_chat is None or df_chat.empty:
-                    # チャットが取得できなければスキップ
                     download_records.append({
                         "Original URL": original_url,
                         "Snippet URL": snippet_url,
@@ -687,10 +733,15 @@ class ChatScraper:
                 # ------------------------------------------------------
                 # [F] チャットを動画IDテーブルに保存
                 # ------------------------------------------------------
-                self.db_handler.save_to_sql(df_chat, table_name=original_video_id)
+                # ※ 主キー候補: Time_in_seconds + Author ID + Message
+                self.db_handler.save_to_sql(
+                    df_chat,
+                    table_name=original_video_id,
+                    primary_keys=["Time_in_seconds", "Author ID", "Message"]
+                )
 
                 # ------------------------------------------------------
-                # [G] スタンプ情報を "Stamp_data" に保存
+                # [G] スタンプ情報を Stamp_data に保存
                 # ------------------------------------------------------
                 self.db_handler.save_stamps_to_sql(stamps_data_list)
 
@@ -716,11 +767,23 @@ class ChatScraper:
 # =============================================================================
 if __name__ == "__main__":
     csv_file = "../data/にじさんじ　切り抜き_20250102_202807.csv"
-    scraper = ChatScraper(db_url="sqlite:///chat_data.db")
+
+    # Windowsパスの場合は「sqlite:///C:/～」の形式にする
+    db_url = "sqlite:///C:/Users/tmkjn/Documents/python/data_analysis/fetch_whisper/chat_data.db"
+
+    scraper = ChatScraper(db_url=db_url)
+
     result_df = scraper.list_original_urls(
         csv_file,
         delete_multiple=True,
         url_column="Original videoURL",
         video_url_column="Video URL",
     )
-    result_df.to_csv("../data/download_results.csv", index=False, encoding="utf-8-sig")
+
+    if not result_df.empty:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        out_csv_path = os.path.join(base_dir, "../data/download_results.csv")
+        result_df.to_csv(out_csv_path, index=False, encoding="utf-8-sig")
+        print(f"ダウンロード結果を {out_csv_path} に保存しました。")
+    else:
+        print("ダウンロード結果はありません。")
